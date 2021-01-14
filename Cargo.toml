@@ -1,0 +1,11 @@
+[package]
+name = 'tokenate'
+version = '0.1.0'
+authors = ['Kai Schmidt <kai.schmidt@constructioninnovations.com>']
+edition = '2018'
+
+[dependencies]
+unicode_reader = '1.0.1'
+
+[[example]]
+name = 'args'
