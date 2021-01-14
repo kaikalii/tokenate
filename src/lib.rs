@@ -1,3 +1,5 @@
+pub mod pattern;
+
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Bytes, Read},
@@ -5,17 +7,27 @@ use std::{
 
 use unicode_reader::CodePoints;
 
+pub use pattern::Pattern;
+
+const NO_MATCHING_PATTERN_MESSAGE_LEN: usize = 30;
+
 #[derive(Debug)]
 pub enum LexError {
     IO(io::Error),
-    NoMatchingPattern,
+    NoMatchingPattern(String),
 }
 
 impl Display for LexError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             LexError::IO(e) => e.fmt(f),
-            LexError::NoMatchingPattern => write!(f, "No matching pattern"),
+            LexError::NoMatchingPattern(text) => {
+                if text.len() > NO_MATCHING_PATTERN_MESSAGE_LEN {
+                    write!(f, "No pattern matching {:?}...", text)
+                } else {
+                    write!(f, "No pattern matching {:?}", text)
+                }
+            }
         }
     }
 }
@@ -23,13 +35,12 @@ impl Display for LexError {
 pub type LexResult<T> = Result<T, LexError>;
 
 #[derive(Debug)]
-pub enum LexFailure {
+pub enum TokenError {
     Error(LexError),
     Unmatched,
-    Skip,
 }
 
-pub type LexControl<T> = Result<T, LexFailure>;
+pub type TokenResult<T> = Result<T, TokenError>;
 
 impl From<io::Error> for LexError {
     fn from(error: io::Error) -> Self {
@@ -37,24 +48,16 @@ impl From<io::Error> for LexError {
     }
 }
 
-impl From<LexError> for LexFailure {
+impl From<LexError> for TokenError {
     fn from(error: LexError) -> Self {
-        LexFailure::Error(error)
+        TokenError::Error(error)
     }
 }
 
-impl From<io::Error> for LexFailure {
+impl From<io::Error> for TokenError {
     fn from(error: io::Error) -> Self {
-        LexFailure::Error(error.into())
+        TokenError::Error(error.into())
     }
-}
-
-pub const fn unmatched<T>() -> LexControl<T> {
-    Err(LexFailure::Unmatched)
-}
-
-pub const fn skip<T>() -> LexControl<T> {
-    Err(LexFailure::Skip)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -72,6 +75,12 @@ impl Loc {
     }
 }
 
+impl Display for Loc {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub start: Loc,
@@ -84,6 +93,12 @@ impl Span {
     }
     pub fn sp<T>(self, data: T) -> Sp<T> {
         Sp::new(data, self)
+    }
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{} - {}", self.start, self.end)
     }
 }
 
@@ -105,6 +120,15 @@ impl<T> Sp<T> {
             data: f(self.data),
             span: self.span,
         }
+    }
+}
+
+impl<T> Display for Sp<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{} [{}]", self.data, self.span)
     }
 }
 
@@ -133,87 +157,74 @@ where
     pub fn loc(&self) -> Loc {
         self.loc
     }
-    pub fn peek(&mut self) -> LexControl<char> {
+    pub fn peek(&mut self) -> io::Result<Option<char>> {
         Ok(if let Some(c) = self.put_back.last().copied() {
-            c
+            Some(c)
         } else {
-            let c = self.take()?;
-            self.put_back.push(c);
-            c
+            let loc = self.loc;
+            self.take()?.map(|c| {
+                self.put_back.push(c);
+                self.loc = loc;
+                c
+            })
         })
     }
-    pub fn take(&mut self) -> LexControl<char> {
-        if let Some(c) = self.put_back.pop() {
-            self.history.push(c);
-            Ok(c)
+    pub fn take(&mut self) -> io::Result<Option<char>> {
+        let c = if let Some(c) = self.put_back.pop() {
+            Some(c)
         } else if let Some(c) = self.chars.next().transpose()? {
+            Some(c)
+        } else {
+            None
+        };
+        Ok(if let Some(c) = c {
             self.history.push(c);
-            Ok(c)
-        } else {
-            unmatched()
-        }
-    }
-    pub fn take_if<F>(&mut self, f: F) -> LexControl<char>
-    where
-        F: Fn(char) -> bool,
-    {
-        let c = self.peek()?;
-        if f(c) {
-            self.take().unwrap();
-            Ok(c)
-        } else {
-            unmatched()
-        }
-    }
-    pub fn lex<F, T>(&mut self, f: F) -> LexResult<Option<Sp<T>>>
-    where
-        F: Fn(&mut Self) -> LexControl<T>,
-    {
-        let start_len = self.history.len();
-        let start_loc = self.loc;
-        match f(self) {
-            Ok(token) => Ok(Some(start_loc.to(self.loc).sp(token))),
-            Err(e) => {
-                self.loc = start_loc;
-                for _ in 0..(self.history.len() - start_len) {
-                    self.put_back.extend(self.history.pop());
+            match c {
+                '\n' => {
+                    self.loc.line += 1;
+                    self.loc.column = 1;
                 }
-                match e {
-                    LexFailure::Error(e) => Err(e),
-                    _ => Ok(None),
-                }
+                _ => self.loc.column += 1,
             }
-        }
+            Some(c)
+        } else {
+            None
+        })
     }
-    pub fn if_char<F>(&mut self, f: F) -> LexControl<String>
+    pub fn take_if<F>(&mut self, f: F) -> io::Result<Option<char>>
     where
         F: Fn(char) -> bool,
     {
-        let mut s = String::new();
-        while let Ok(c) = self.take_if(&f) {
-            s.push(c)
-        }
-        if s.is_empty() {
-            Err(LexFailure::Unmatched)
-        } else {
-            Ok(s)
-        }
+        Ok(self.peek()?.and_then(|c| {
+            if f(c) {
+                self.take().unwrap();
+                Some(c)
+            } else {
+                None
+            }
+        }))
     }
-    pub fn charset(&mut self, set: &[char]) -> LexControl<String> {
-        self.if_char(|c| set.contains(&c))
-    }
-    pub fn whitespace(&mut self) -> LexControl<String> {
-        self.if_char(char::is_whitespace)
+    fn revert(&mut self, n: usize, loc: Loc) {
+        self.loc = loc;
+        for _ in 0..(self.history.len() - n) {
+            self.put_back.extend(self.history.pop());
+        }
     }
 }
 
-type DynTokenPattern<R, T> = dyn Fn(&mut Chars<R>) -> LexControl<T>;
+struct PatternConfig<R, T>
+where
+    R: Read,
+{
+    skip: bool,
+    pattern: Box<dyn Pattern<R, Token = T>>,
+}
 
 pub struct TokenPatterns<R, T>
 where
     R: Read,
 {
-    patterns: Vec<Box<DynTokenPattern<R, T>>>,
+    patterns: Vec<PatternConfig<R, T>>,
 }
 
 impl<R, T> Default for TokenPatterns<R, T>
@@ -234,52 +245,53 @@ where
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with<F>(mut self, f: F) -> Self
+    pub fn with<P>(mut self, pattern: P) -> Self
     where
-        F: Fn(&mut Chars<R>) -> LexControl<T> + 'static,
+        P: Fn(&mut Chars<R>) -> TokenResult<T> + 'static,
     {
-        self.patterns.push(Box::new(f));
+        self.patterns.push(PatternConfig {
+            skip: false,
+            pattern: Box::new(pattern),
+        });
         self
     }
-    pub fn skip<F>(mut self, f: F) -> Self
+    pub fn skip<Pattern>(mut self, pattern: Pattern) -> Self
     where
-        F: Fn(&mut Chars<R>) -> LexControl<T> + 'static,
+        Pattern: Fn(&mut Chars<R>) -> TokenResult<T> + 'static,
     {
-        self.patterns.push(Box::new(move |chars| match f(chars) {
-            Ok(_) => skip(),
-            e => e,
-        }));
+        self.patterns.push(PatternConfig {
+            skip: true,
+            pattern: Box::new(pattern),
+        });
         self
     }
     pub fn tokenize(&self, reader: R) -> LexResult<Vec<Sp<T>>> {
         let mut args = Vec::new();
         let mut chars = Chars::new(reader);
-        while chars.peek().is_ok() {
+        while chars.peek()?.is_some() {
             let mut matched = false;
-            for pattern in &self.patterns {
-                let start_len = chars.history.len();
-                let start_loc = chars.loc;
-                match pattern(&mut chars) {
+            let start_len = chars.history.len();
+            let start_loc = chars.loc;
+            for cfg in &self.patterns {
+                match cfg.pattern.matches(&mut chars) {
                     Ok(token) => {
-                        args.push(start_loc.to(chars.loc).sp(token));
-                        matched = true;
-                        break;
-                    }
-                    Err(LexFailure::Skip) => {
-                        matched = true;
-                        break;
-                    }
-                    Err(LexFailure::Unmatched) => {
-                        chars.loc = start_loc;
-                        for _ in 0..(chars.history.len() - start_len) {
-                            chars.put_back.extend(chars.history.pop());
+                        if !cfg.skip {
+                            args.push(start_loc.to(chars.loc).sp(token));
                         }
+                        matched = true;
+                        break;
                     }
-                    Err(LexFailure::Error(e)) => return Err(e),
+                    Err(TokenError::Unmatched) => chars.revert(start_len, start_loc),
+                    Err(TokenError::Error(e)) => return Err(e),
                 }
             }
             if !matched {
-                return Err(LexError::NoMatchingPattern);
+                return Err(LexError::NoMatchingPattern(
+                    std::iter::from_fn(|| chars.take().transpose())
+                        .filter_map(Result::ok)
+                        .take(NO_MATCHING_PATTERN_MESSAGE_LEN)
+                        .collect(),
+                ));
             }
         }
         Ok(args)
@@ -295,5 +307,15 @@ impl BoolTake for bool {
         let res = *self;
         *self = false;
         res
+    }
+}
+
+pub trait OrUnmatched<T> {
+    fn or_unmatched(self) -> TokenResult<T>;
+}
+
+impl<T> OrUnmatched<T> for Option<T> {
+    fn or_unmatched(self) -> TokenResult<T> {
+        self.ok_or(TokenError::Unmatched)
     }
 }
