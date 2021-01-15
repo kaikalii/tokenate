@@ -1,5 +1,3 @@
-pub mod pattern;
-
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Bytes, Read},
@@ -7,58 +5,30 @@ use std::{
 
 use unicode_reader::CodePoints;
 
-pub use pattern::Pattern;
+const INVALID_INPUT_MAX_LEN: usize = 30;
 
-const NO_MATCHING_PATTERN_MESSAGE_LEN: usize = 30;
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LexError {
-    IO(io::Error),
-    NoMatchingPattern(String),
+    #[error("{0}")]
+    IO(#[from] io::Error),
+    #[error("Unable to tokenize {}", format_invalid_input(.0))]
+    InvalidInput(String),
 }
 
-impl Display for LexError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            LexError::IO(e) => e.fmt(f),
-            LexError::NoMatchingPattern(text) => {
-                if text.len() > NO_MATCHING_PATTERN_MESSAGE_LEN {
-                    write!(f, "No pattern matching {:?}...", text)
-                } else {
-                    write!(f, "No pattern matching {:?}", text)
-                }
-            }
+fn format_invalid_input(s: &str) -> String {
+    format!(
+        "Unable to tokenize {:?}{}",
+        s,
+        if s.len() >= INVALID_INPUT_MAX_LEN {
+            "..."
+        } else {
+            ""
         }
-    }
+    )
 }
 
 pub type LexResult<T> = Result<T, LexError>;
-
-#[derive(Debug)]
-pub enum TokenError {
-    Error(LexError),
-    Unmatched,
-}
-
-pub type TokenResult<T> = Result<T, TokenError>;
-
-impl From<io::Error> for LexError {
-    fn from(error: io::Error) -> Self {
-        LexError::IO(error)
-    }
-}
-
-impl From<LexError> for TokenError {
-    fn from(error: LexError) -> Self {
-        TokenError::Error(error)
-    }
-}
-
-impl From<io::Error> for TokenError {
-    fn from(error: io::Error) -> Self {
-        TokenError::Error(error.into())
-    }
-}
+pub type TokenResult<T> = LexResult<Option<T>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Loc {
@@ -191,6 +161,9 @@ where
             None
         })
     }
+    pub fn take_iter(&mut self) -> impl Iterator<Item = io::Result<char>> + '_ {
+        std::iter::from_fn(move || self.take().transpose())
+    }
     pub fn take_if<F>(&mut self, f: F) -> io::Result<Option<char>>
     where
         F: Fn(char) -> bool,
@@ -210,91 +183,19 @@ where
             self.put_back.extend(self.history.pop());
         }
     }
-}
-
-struct PatternConfig<R, T>
-where
-    R: Read,
-{
-    skip: bool,
-    pattern: Box<dyn Pattern<R, Token = T>>,
-}
-
-pub struct TokenPatterns<R, T>
-where
-    R: Read,
-{
-    patterns: Vec<PatternConfig<R, T>>,
-}
-
-impl<R, T> Default for TokenPatterns<R, T>
-where
-    R: Read,
-{
-    fn default() -> Self {
-        TokenPatterns {
-            patterns: Vec::new(),
-        }
+    pub fn invalid_input<T>(&mut self) -> LexResult<T> {
+        Err(LexError::InvalidInput(
+            self.take_iter()
+                .filter_map(Result::ok)
+                .take(INVALID_INPUT_MAX_LEN)
+                .collect(),
+        ))
     }
-}
-
-impl<R, T> TokenPatterns<R, T>
-where
-    R: Read,
-{
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with<P>(mut self, pattern: P) -> Self
+    pub fn matching<P>(&mut self, pattern: &P) -> TokenResult<Sp<P::Token>>
     where
-        P: Fn(&mut Chars<R>) -> TokenResult<T> + 'static,
+        P: Pattern<R>,
     {
-        self.patterns.push(PatternConfig {
-            skip: false,
-            pattern: Box::new(pattern),
-        });
-        self
-    }
-    pub fn skip<Pattern>(mut self, pattern: Pattern) -> Self
-    where
-        Pattern: Fn(&mut Chars<R>) -> TokenResult<T> + 'static,
-    {
-        self.patterns.push(PatternConfig {
-            skip: true,
-            pattern: Box::new(pattern),
-        });
-        self
-    }
-    pub fn tokenize(&self, reader: R) -> LexResult<Vec<Sp<T>>> {
-        let mut args = Vec::new();
-        let mut chars = Chars::new(reader);
-        while chars.peek()?.is_some() {
-            let mut matched = false;
-            let start_len = chars.history.len();
-            let start_loc = chars.loc;
-            for cfg in &self.patterns {
-                match cfg.pattern.matches(&mut chars) {
-                    Ok(token) => {
-                        if !cfg.skip {
-                            args.push(start_loc.to(chars.loc).sp(token));
-                        }
-                        matched = true;
-                        break;
-                    }
-                    Err(TokenError::Unmatched) => chars.revert(start_len, start_loc),
-                    Err(TokenError::Error(e)) => return Err(e),
-                }
-            }
-            if !matched {
-                return Err(LexError::NoMatchingPattern(
-                    std::iter::from_fn(|| chars.take().transpose())
-                        .filter_map(Result::ok)
-                        .take(NO_MATCHING_PATTERN_MESSAGE_LEN)
-                        .collect(),
-                ));
-            }
-        }
-        Ok(args)
+        pattern.matching(self)
     }
 }
 
@@ -310,12 +211,79 @@ impl BoolTake for bool {
     }
 }
 
-pub trait OrUnmatched<T> {
-    fn or_unmatched(self) -> TokenResult<T>;
+#[derive(Debug, Clone)]
+pub struct Patterns<A, B> {
+    pub first: A,
+    pub second: B,
 }
 
-impl<T> OrUnmatched<T> for Option<T> {
-    fn or_unmatched(self) -> TokenResult<T> {
-        self.ok_or(TokenError::Unmatched)
+pub trait Pattern<R>: Sized
+where
+    R: Read,
+{
+    type Token;
+    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>>;
+    fn or<B>(self, other: B) -> Patterns<Self, B>
+    where
+        B: Pattern<R>,
+    {
+        Patterns {
+            first: self,
+            second: other,
+        }
+    }
+}
+
+impl<R, F, T> Pattern<R> for F
+where
+    R: Read,
+    F: Fn(&mut Chars<R>) -> TokenResult<T>,
+{
+    type Token = T;
+    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+        let start_size = chars.history.len();
+        let start_loc = chars.loc;
+        match self(chars) {
+            Ok(Some(token)) => Ok(Some(start_loc.to(chars.loc).sp(token))),
+            Ok(None) => {
+                chars.revert(start_size, start_loc);
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl<R> Pattern<R> for fn(char) -> bool
+where
+    R: Read,
+{
+    type Token = String;
+    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+        let mut token = String::new();
+        let start_loc = chars.loc;
+        while let Some(c) = chars.take_if(self)? {
+            token.push(c);
+        }
+        Ok(if token.is_empty() {
+            None
+        } else {
+            Some(start_loc.to(chars.loc).sp(token))
+        })
+    }
+}
+
+impl<R, A, B> Pattern<R> for Patterns<A, B>
+where
+    R: Read,
+    A: Pattern<R>,
+    B: Pattern<R, Token = A::Token>,
+{
+    type Token = A::Token;
+    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+        match self.first.matching(chars) {
+            Ok(None) => self.second.matching(chars),
+            res => res,
+        }
     }
 }

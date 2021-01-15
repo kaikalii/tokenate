@@ -3,33 +3,52 @@ This example implements a simple command-line style argument parser
 where arguments are seperated by whitespace unless delimited by double quotes
 */
 
-use std::io;
+use std::io::Read;
 
 use tokenate::*;
 
 /// Try to tokenize a quoted arg
-fn quoted_arg<R: io::Read>(chars: &mut Chars<R>) -> TokenResult<String> {
-    chars.take_if(|c| c == '"')?.or_unmatched()?;
-    let mut arg = String::new();
-    let mut escaped = false;
-    while let Some(c) = chars.take()? {
-        match c {
-            '"' if escaped.take() => arg.push('"'),
-            '"' => break,
-            c => arg.push(c),
+fn quoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
+    Ok(if chars.take_if(|c| c == '"')?.is_some() {
+        let mut arg = String::new();
+        let mut escaped = false;
+        while let Some(c) = chars.take()? {
+            match c {
+                '"' if escaped.take() => arg.push('"'),
+                '"' => break,
+                c => arg.push(c),
+            }
         }
-    }
-    Ok(arg)
+        Some(arg)
+    } else {
+        None
+    })
 }
 
 /// Try to tokenize an unquoted arg
-fn unquoted_arg<R: io::Read>(chars: &mut Chars<R>) -> TokenResult<String> {
-    let c = chars.take_if(|c| !c.is_whitespace())?.or_unmatched()?;
-    let mut arg = String::from(c);
-    while let Some(c) = chars.take_if(|c| !c.is_whitespace())? {
-        arg.push(c);
+fn unquoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
+    Ok(if let Some(c) = chars.take_if(|c| !c.is_whitespace())? {
+        let mut arg = String::from(c);
+        while let Some(c) = chars.take_if(|c| !c.is_whitespace())? {
+            arg.push(c);
+        }
+        Some(arg)
+    } else {
+        None
+    })
+}
+
+fn tokenize_args<R: Read>(chars: &mut Chars<R>) -> LexResult<Vec<Sp<String>>> {
+    let mut args = Vec::new();
+    let patterns = quoted_arg.or(unquoted_arg);
+    while chars.peek()?.is_some() {
+        if let Some(arg) = chars.matching(&patterns)? {
+            args.push(arg);
+        } else {
+            chars.take()?;
+        }
     }
-    Ok(arg)
+    Ok(args)
 }
 
 fn main() {
@@ -38,14 +57,11 @@ fn main() {
         r#"arg1 "arg2a arg2b" arg3"#,
         r#"cd "C:\Program Files""#,
     ];
-    let patterns = TokenPatterns::new()
-        .with(quoted_arg)
-        .with(unquoted_arg)
-        .skip(pattern::whitespace);
     for &input in &inputs {
         println!("input: {}", input);
+        let mut chars = Chars::new(input.as_bytes());
         println!("args: ");
-        for arg in patterns.tokenize(input.as_bytes()).unwrap() {
+        for arg in tokenize_args(&mut chars).unwrap() {
             println!("  {:<20}{}", arg.data, arg.span)
         }
         println!();
