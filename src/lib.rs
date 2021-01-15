@@ -6,6 +6,7 @@ use std::{
     io::{self, Bytes, Read},
 };
 
+use smallvec::SmallVec;
 use unicode_reader::CodePoints;
 
 pub use pattern::{CharPattern, Pattern};
@@ -124,7 +125,7 @@ where
     R: Read,
 {
     chars: CodePoints<Bytes<R>>,
-    history: Vec<char>,
+    history: SmallVec<[char; 32]>,
     cursor: usize,
     revert_trackers: usize,
     loc: Loc,
@@ -146,7 +147,7 @@ where
     pub fn new(reader: R) -> Self {
         Chars {
             chars: reader.bytes().into(),
-            history: Vec::new(),
+            history: SmallVec::new(),
             cursor: 0,
             revert_trackers: 0,
             loc: Loc::new(1, 1),

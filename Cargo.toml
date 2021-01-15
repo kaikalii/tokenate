@@ -6,6 +6,7 @@ edition = '2018'
 
 [dependencies]
 unicode_reader = '1.0.1'
+smallvec = '1.6.1'
 
 [[example]]
 name = 'args'
