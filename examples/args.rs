@@ -25,20 +25,14 @@ fn quoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
     })
 }
 
-fn tokenize_args<R: Read>(chars: &mut Chars<R>) -> LexResult<Vec<Sp<String>>> {
-    let mut args = Vec::new();
-    let patterns = quoted_arg.or_chars(|c: char| !c.is_whitespace());
-    while chars.peek()?.is_some() {
-        if let Some(arg) = chars.matching(&patterns)? {
-            args.push(arg);
-        } else {
-            chars.take()?;
-        }
-    }
-    Ok(args)
-}
-
 fn main() {
+    // The patterns used to match args
+    // `quoted_arg` will match arguments surrounded in quotes
+    // `pattern::not_whitespace` will match arguments without quotes
+    // The `or` combinator is a method of the `Pattern` trait, and it creates a new pattern
+    // which will try to match the two patterns in order
+    let patterns = quoted_arg.or_chars(pattern::not_whitespace);
+    // A list of test inputs
     let inputs = [
         "arg1 arg2 arg3",
         r#"arg1 "arg2a arg2b" arg3"#,
@@ -48,7 +42,12 @@ fn main() {
         println!("input: {}", input);
         let mut chars = Chars::new(input.as_bytes());
         println!("args: ");
-        for arg in tokenize_args(&mut chars).unwrap() {
+
+        for arg in chars
+            // Match the patterns and skip whitespace
+            .tokenize(&patterns, &char::is_whitespace.pattern())
+            .unwrap()
+        {
             println!("  {:<20}{}", arg.data, arg.span)
         }
         println!();

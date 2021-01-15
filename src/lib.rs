@@ -140,13 +140,16 @@ where
     pub fn loc(&self) -> Loc {
         self.loc
     }
+    fn put_back(&mut self) {
+        self.put_back.extend(self.history.pop());
+    }
     pub fn peek(&mut self) -> io::Result<Option<char>> {
         Ok(if let Some(c) = self.put_back.last().copied() {
             Some(c)
         } else {
             let loc = self.loc;
             self.take()?.map(|c| {
-                self.put_back.push(c);
+                self.put_back();
                 self.loc = loc;
                 c
             })
@@ -193,7 +196,7 @@ where
     fn revert(&mut self, n: usize, loc: Loc) {
         self.loc = loc;
         for _ in 0..(self.history.len() - n) {
-            self.put_back.extend(self.history.pop());
+            self.put_back();
         }
     }
     pub fn invalid_input<T>(&mut self) -> LexResult<T> {
@@ -209,6 +212,24 @@ where
         P: Pattern<R>,
     {
         pattern.matching(self)
+    }
+    pub fn tokenize<M, S, T>(&mut self, matching: &M, skip: &S) -> LexResult<Vec<Sp<T>>>
+    where
+        M: Pattern<R, Token = T>,
+        S: Pattern<R>,
+    {
+        let mut tokens = Vec::new();
+        while self.peek()?.is_some() {
+            let start_len = self.history.len();
+            let start_loc = self.loc;
+            if let Some(token) = self.matching(matching)? {
+                tokens.push(token);
+            } else if self.matching(skip)?.is_none() {
+                self.revert(start_len, start_loc);
+                return self.invalid_input();
+            }
+        }
+        Ok(tokens)
     }
 }
 

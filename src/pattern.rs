@@ -6,6 +6,13 @@ pub fn not_whitespace(c: char) -> bool {
     !c.is_whitespace()
 }
 
+pub fn chars<P>(pattern: P) -> CharPatternWrapper<P>
+where
+    P: CharPattern,
+{
+    pattern.pattern()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Patterns<A, B> {
     pub first: A,
@@ -38,11 +45,11 @@ where
             second: other.pattern(),
         }
     }
-    fn map<F>(self, f: F) -> MappedPattern<Self, F>
+    fn map<F>(self, f: F) -> Map<Self, F>
     where
         Self: Sized,
     {
-        MappedPattern { pattern: self, f }
+        Map { pattern: self, f }
     }
     fn parse<T>(self) -> Parse<R, Self, T>
     where
@@ -64,6 +71,32 @@ where
             val,
             pd: PhantomData,
         }
+    }
+    fn skip(self) -> Skip<R, Self>
+    where
+        Self: Sized,
+    {
+        self.is(())
+    }
+    fn or_skip<B>(self, other: B) -> Patterns<Skip<R, Self>, Skip<R, B>>
+    where
+        Self: Sized,
+        B: Pattern<R>,
+    {
+        Patterns {
+            first: self.skip(),
+            second: other.skip(),
+        }
+    }
+}
+
+impl<R> Pattern<R> for ()
+where
+    R: Read,
+{
+    type Token = ();
+    fn matching(&self, _: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+        Ok(None)
     }
 }
 
@@ -156,12 +189,12 @@ where
     }
 }
 
-pub struct MappedPattern<P, F> {
+pub struct Map<P, F> {
     pattern: P,
     f: F,
 }
 
-impl<R, P, F, U> Pattern<R> for MappedPattern<P, F>
+impl<R, P, F, U> Pattern<R> for Map<P, F>
 where
     R: Read,
     P: Pattern<R>,
@@ -229,3 +262,5 @@ where
             .map(|token| token.span.sp(self.val.clone())))
     }
 }
+
+pub type Skip<R, P> = Is<R, P, ()>;
