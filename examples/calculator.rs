@@ -26,12 +26,7 @@ fn main() {
         .or(number);
 
     // A list of test inputs
-    let inputs = [
-        "1 + 2",
-        "6 / 3 - 4.1",
-        "(-1 + 2 / .3) * (3 + 4) 1.2.3",
-        "6.02e23",
-    ];
+    let inputs = ["1 + 2", "6 / 3 - 4.1", "(-1 + 2 / .3) * (3 + 4)", "6.02e23"];
     for input in &inputs {
         println!("input: {}", input);
         println!("tokens:");

@@ -107,12 +107,12 @@ where
 {
     type Token = T;
     fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
-        let start_size = chars.history.len();
+        let start_cursor = chars.cursor;
         let start_loc = chars.loc;
         match self(chars) {
             Ok(Some(token)) => Ok(Some(start_loc.to(chars.loc).sp(token))),
             Ok(None) => {
-                chars.revert(start_size, start_loc);
+                chars.revert(start_cursor, start_loc);
                 Ok(None)
             }
             Err(e) => Err(e),

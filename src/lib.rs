@@ -111,8 +111,8 @@ where
     R: Read,
 {
     chars: CodePoints<Bytes<R>>,
-    put_back: Vec<char>,
     history: Vec<char>,
+    cursor: usize,
     loc: Loc,
 }
 
@@ -132,8 +132,8 @@ where
     pub fn new(reader: R) -> Self {
         Chars {
             chars: reader.bytes().into(),
-            put_back: Vec::new(),
             history: Vec::new(),
+            cursor: 0,
             loc: Loc::new(1, 1),
         }
     }
@@ -141,11 +141,11 @@ where
         self.loc
     }
     fn put_back(&mut self) {
-        self.put_back.extend(self.history.pop());
+        self.cursor -= 1;
     }
     pub fn peek(&mut self) -> io::Result<Option<char>> {
-        Ok(if let Some(c) = self.put_back.last().copied() {
-            Some(c)
+        Ok(if let Some(c) = self.history.get(self.cursor) {
+            Some(*c)
         } else {
             let loc = self.loc;
             self.take()?.map(|c| {
@@ -156,15 +156,16 @@ where
         })
     }
     pub fn take(&mut self) -> io::Result<Option<char>> {
-        let c = if let Some(c) = self.put_back.pop() {
-            Some(c)
+        let c = if self.cursor < self.history.len() {
+            Some(self.history[self.cursor])
         } else if let Some(c) = self.chars.next().transpose()? {
+            self.history.push(c);
             Some(c)
         } else {
             None
         };
         Ok(if let Some(c) = c {
-            self.history.push(c);
+            self.cursor += 1;
             match c {
                 '\n' => {
                     self.loc.line += 1;
@@ -193,11 +194,9 @@ where
             }
         }))
     }
-    fn revert(&mut self, n: usize, loc: Loc) {
+    fn revert(&mut self, cursor: usize, loc: Loc) {
         self.loc = loc;
-        for _ in 0..(self.history.len() - n) {
-            self.put_back();
-        }
+        self.cursor = cursor;
     }
     pub fn invalid_input<T>(&mut self) -> LexResult<T> {
         Err(LexError::InvalidInput(
@@ -217,15 +216,16 @@ where
     where
         M: Pattern<R, Token = T>,
         S: Pattern<R>,
+        T: fmt::Debug,
     {
         let mut tokens = Vec::new();
         while self.peek()?.is_some() {
-            let start_len = self.history.len();
+            let start_cursor = self.cursor;
             let start_loc = self.loc;
             if let Some(token) = self.matching(matching)? {
                 tokens.push(token);
             } else if self.matching(skip)?.is_none() {
-                self.revert(start_len, start_loc);
+                self.revert(start_cursor, start_loc);
                 return self.invalid_input();
             }
         }
