@@ -1,11 +1,15 @@
+//! The [`Pattern`] trait, its combinators, and some helper functions for patterns
+
 use std::{marker::PhantomData, str::FromStr};
 
 use crate::*;
 
+/// Check if a `char` is not whitespace
 pub fn not_whitespace(c: char) -> bool {
     !c.is_whitespace()
 }
 
+/// Create a [`Pattern`] from a [`CharPattern`]
 pub fn chars<P>(pattern: P) -> CharPatternWrapper<P>
 where
     P: CharPattern,
@@ -13,18 +17,28 @@ where
     pattern.pattern()
 }
 
+/// Two [`Pattern`]s that will attempt to be matched in order
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Patterns<A, B> {
+    /// The first pattern
     pub first: A,
+    /// The second pattern
     pub second: B,
 }
 
+/**
+Defines a token pattern
+*/
 pub trait Pattern<R>
 where
     R: Read,
 {
+    /// The type of the token that is produced if the pattern matches
     type Token;
+    /// Try to match the pattern and consume a token from [`Chars`]
     fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>>;
+    /// Combine this pattern with another. If matching this pattern fails,
+    /// the other pattern will be tried
     fn or<B>(self, other: B) -> Patterns<Self, B>
     where
         Self: Sized,
@@ -35,22 +49,28 @@ where
             second: other,
         }
     }
-    fn or_chars<B>(self, other: B) -> Patterns<Self, CharPatternWrapper<B>>
+    /// Combine this pattern with a [`CharPattern`]
+    ///
+    /// Equivalent to `pattern.or(char_pattern.pattern())`
+    fn or_chars<B>(self, char_pattern: B) -> Patterns<Self, CharPatternWrapper<B>>
     where
         Self: Sized,
         B: CharPattern,
     {
         Patterns {
             first: self,
-            second: other.pattern(),
+            second: char_pattern.pattern(),
         }
     }
+    /// Create a pattern that first tries to match this one.
+    /// Upon success, the resulting token is transformed using the given function.
     fn map<F>(self, f: F) -> Map<Self, F>
     where
         Self: Sized,
     {
         Map { pattern: self, f }
     }
+    /// Create a pattern that attempt to parse to a token of a type that implements [`FromStr`]
     fn parse<T>(self) -> Parse<R, Self, T>
     where
         Self: Sized,
@@ -61,6 +81,8 @@ where
             pd: PhantomData,
         }
     }
+    /// Create a pattern that first tries to match this one.
+    /// Upon success, a the given value is returned instead.
     fn is<T>(self, val: T) -> Is<R, Self, T>
     where
         Self: Sized,
@@ -72,12 +94,14 @@ where
             pd: PhantomData,
         }
     }
+    /// Change the token type to `()`
     fn skip(self) -> Skip<R, Self>
     where
         Self: Sized,
     {
         self.is(())
     }
+    /// Combine this pattern with another and change their token types to `()`
     fn or_skip<B>(self, other: B) -> Patterns<Skip<R, Self>, Skip<R, B>>
     where
         Self: Sized,
@@ -134,8 +158,11 @@ where
     }
 }
 
+/// A pattern than either accepts or rejects individual characters
 pub trait CharPattern {
+    /// Check if the pattern matches a character
     fn matches(&self, c: char) -> bool;
+    /// Promote this to wrapper than implements [`Pattern`]
     fn pattern(self) -> CharPatternWrapper<Self>
     where
         Self: Sized,
@@ -165,6 +192,7 @@ where
     }
 }
 
+/// A wrapper for implementors of [`CharPattern`] that implements [`Pattern`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct CharPatternWrapper<P>(pub P);
 
@@ -188,6 +216,7 @@ where
     }
 }
 
+/// The pattern produced by [`Pattern::map`]
 pub struct Map<P, F> {
     pattern: P,
     f: F,
@@ -208,6 +237,7 @@ where
     }
 }
 
+/// The pattern produced by [`Pattern::parse`]
 pub struct Parse<R, P, T>
 where
     R: Read,
@@ -237,6 +267,7 @@ where
     }
 }
 
+/// The pattern produced by [`Pattern::is`]
 pub struct Is<R, P, T>
 where
     R: Read,
@@ -262,4 +293,5 @@ where
     }
 }
 
+/// The pattern produced by [`Pattern::skip`]
 pub type Skip<R, P> = Is<R, P, ()>;

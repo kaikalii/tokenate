@@ -3,6 +3,18 @@ name = 'tokenate'
 version = '0.1.0'
 authors = ['Kai Schmidt <kai.schmidt@constructioninnovations.com>']
 edition = '2018'
+readme = 'readme.md'
+license = 'MIT'
+description = 'A simple interface for writing lexical analyzers'
+documentation = 'https://docs.rs/tokenate'
+repository = 'https://github.com/kaikalii/tokenate'
+keywords = [
+    'token',
+    'lexer',
+    'lexical',
+    'parse',
+]
+categories = ['parsing']
 
 [dependencies]
 unicode_reader = '1.0.1'
