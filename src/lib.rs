@@ -1,9 +1,13 @@
+pub mod pattern;
+
 use std::{
     fmt::{self, Display, Formatter},
     io::{self, Bytes, Read},
 };
 
 use unicode_reader::CodePoints;
+
+pub use pattern::{CharPattern, Pattern};
 
 const INVALID_INPUT_MAX_LEN: usize = 30;
 
@@ -102,7 +106,7 @@ where
     }
 }
 
-pub struct Chars<R = Box<dyn Read>>
+pub struct Chars<R>
 where
     R: Read,
 {
@@ -110,6 +114,15 @@ where
     put_back: Vec<char>,
     history: Vec<char>,
     loc: Loc,
+}
+
+impl<R> From<R> for Chars<R>
+where
+    R: Read,
+{
+    fn from(reader: R) -> Self {
+        Chars::new(reader)
+    }
 }
 
 impl<R> Chars<R>
@@ -208,138 +221,5 @@ impl BoolTake for bool {
         let res = *self;
         *self = false;
         res
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct Patterns<A, B> {
-    pub first: A,
-    pub second: B,
-}
-
-pub trait Pattern<R>
-where
-    R: Read,
-{
-    type Token;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>>;
-    fn or<B>(self, other: B) -> Patterns<Self, B>
-    where
-        Self: Sized,
-        B: Pattern<R>,
-    {
-        Patterns {
-            first: self,
-            second: other,
-        }
-    }
-    fn or_chars<B>(self, other: B) -> Patterns<Self, CharPatternWrapper<B>>
-    where
-        Self: Sized,
-        B: CharPattern,
-    {
-        Patterns {
-            first: self,
-            second: other.pattern(),
-        }
-    }
-}
-
-impl<R, F, T> Pattern<R> for F
-where
-    R: Read,
-    F: Fn(&mut Chars<R>) -> TokenResult<T>,
-{
-    type Token = T;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
-        let start_size = chars.history.len();
-        let start_loc = chars.loc;
-        match self(chars) {
-            Ok(Some(token)) => Ok(Some(start_loc.to(chars.loc).sp(token))),
-            Ok(None) => {
-                chars.revert(start_size, start_loc);
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl<R, A, B> Pattern<R> for Patterns<A, B>
-where
-    R: Read,
-    A: Pattern<R>,
-    B: Pattern<R, Token = A::Token>,
-{
-    type Token = A::Token;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
-        match self.first.matching(chars) {
-            Ok(None) => self.second.matching(chars),
-            res => res,
-        }
-    }
-}
-
-pub trait CharPattern {
-    fn matches(&self, c: char) -> bool;
-    fn pattern(self) -> CharPatternWrapper<Self>
-    where
-        Self: Sized,
-    {
-        CharPatternWrapper(self)
-    }
-    fn or<B>(self, other: B) -> Patterns<CharPatternWrapper<Self>, CharPatternWrapper<B>>
-    where
-        Self: Sized,
-        B: CharPattern,
-    {
-        Patterns {
-            first: self.pattern(),
-            second: other.pattern(),
-        }
-    }
-}
-
-impl CharPattern for char {
-    fn matches(&self, c: char) -> bool {
-        self == &c
-    }
-}
-
-impl CharPattern for str {
-    fn matches(&self, c: char) -> bool {
-        self.contains(c)
-    }
-}
-
-impl<F> CharPattern for F
-where
-    F: Fn(char) -> bool,
-{
-    fn matches(&self, c: char) -> bool {
-        self(c)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct CharPatternWrapper<P>(pub P);
-
-impl<R, P> Pattern<R> for CharPatternWrapper<P>
-where
-    R: Read,
-    P: CharPattern,
-{
-    type Token = String;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
-        let mut token = String::new();
-        let start_loc = chars.loc;
-        while let Some(c) = chars.take_if(|c| self.0.matches(c))? {
-            token.push(c);
-        }
-        Ok(if token.is_empty() {
-            None
-        } else {
-            Some(start_loc.to(chars.loc).sp(token))
-        })
     }
 }
