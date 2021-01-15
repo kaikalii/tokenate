@@ -25,22 +25,9 @@ fn quoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
     })
 }
 
-/// Try to tokenize an unquoted arg
-fn unquoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
-    Ok(if let Some(c) = chars.take_if(|c| !c.is_whitespace())? {
-        let mut arg = String::from(c);
-        while let Some(c) = chars.take_if(|c| !c.is_whitespace())? {
-            arg.push(c);
-        }
-        Some(arg)
-    } else {
-        None
-    })
-}
-
 fn tokenize_args<R: Read>(chars: &mut Chars<R>) -> LexResult<Vec<Sp<String>>> {
     let mut args = Vec::new();
-    let patterns = quoted_arg.or(unquoted_arg);
+    let patterns = quoted_arg.or_chars(|c: char| !c.is_whitespace());
     while chars.peek()?.is_some() {
         if let Some(arg) = chars.matching(&patterns)? {
             args.push(arg);
