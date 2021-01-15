@@ -1,6 +1,10 @@
 //! The [`Pattern`] trait, its combinators, and some helper functions for patterns
 
-use std::{marker::PhantomData, str::FromStr};
+use std::{
+    marker::PhantomData,
+    ops::{Bound, RangeBounds, RangeFrom, RangeInclusive},
+    str::FromStr,
+};
 
 use crate::*;
 
@@ -10,11 +14,11 @@ pub fn not_whitespace(c: char) -> bool {
 }
 
 /// Create a [`Pattern`] from a [`CharPattern`]
-pub fn chars<P>(pattern: P) -> CharPatternWrapper<P>
+pub fn chars<P>(pattern: P) -> TakeAtLeast<P>
 where
     P: CharPattern,
 {
-    pattern.pattern()
+    pattern.any()
 }
 
 /// Two [`Pattern`]s that will attempt to be matched in order
@@ -29,20 +33,17 @@ pub struct Patterns<A, B> {
 /**
 Defines a token pattern
 */
-pub trait Pattern<R>
-where
-    R: Read,
-{
+pub trait Pattern {
     /// The type of the token that is produced if the pattern matches
     type Token;
     /// Try to match the pattern and consume a token from [`Chars`]
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>>;
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>>;
     /// Combine this pattern with another. If matching this pattern fails,
     /// the other pattern will be tried
     fn or<B>(self, other: B) -> Patterns<Self, B>
     where
         Self: Sized,
-        B: Pattern<R>,
+        B: Pattern<Token = Self::Token>,
     {
         Patterns {
             first: self,
@@ -51,15 +52,15 @@ where
     }
     /// Combine this pattern with a [`CharPattern`]
     ///
-    /// Equivalent to `pattern.or(char_pattern.pattern())`
-    fn or_chars<B>(self, char_pattern: B) -> Patterns<Self, CharPatternWrapper<B>>
+    /// Equivalent to `pattern.or(char_pattern.any())`
+    fn or_chars<B>(self, char_pattern: B) -> Patterns<Self, TakeAtLeast<B>>
     where
         Self: Sized,
         B: CharPattern,
     {
         Patterns {
             first: self,
-            second: char_pattern.pattern(),
+            second: char_pattern.any(),
         }
     }
     /// Create a pattern that first tries to match this one.
@@ -71,7 +72,7 @@ where
         Map { pattern: self, f }
     }
     /// Create a pattern that attempt to parse to a token of a type that implements [`FromStr`]
-    fn parse<T>(self) -> Parse<R, Self, T>
+    fn parse<T>(self) -> Parse<Self, T>
     where
         Self: Sized,
         Self::Token: AsRef<str>,
@@ -83,29 +84,40 @@ where
     }
     /// Create a pattern that first tries to match this one.
     /// Upon success, a the given value is returned instead.
-    fn is<T>(self, val: T) -> Is<R, Self, T>
+    fn is<T>(self, val: T) -> Is<Self, T>
     where
         Self: Sized,
         T: Clone,
     {
-        Is {
-            pattern: self,
-            val,
-            pd: PhantomData,
+        Is { pattern: self, val }
+    }
+    /// Create a pattern that first tries to match this one.
+    /// Upon success, attempts to match the given second pattern and combine the
+    /// resulting tokens with the given function
+    fn join<B, F, T>(self, second: B, f: F) -> Join<Self, B, F>
+    where
+        Self: Sized,
+        B: Pattern,
+        F: Fn(Self::Token, B::Token) -> T,
+    {
+        Join {
+            a: self,
+            b: second,
+            f,
         }
     }
     /// Change the token type to `()`
-    fn skip(self) -> Skip<R, Self>
+    fn skip(self) -> Skip<Self>
     where
         Self: Sized,
     {
         self.is(())
     }
     /// Combine this pattern with another and change their token types to `()`
-    fn or_skip<B>(self, other: B) -> Patterns<Skip<R, Self>, Skip<R, B>>
+    fn or_skip<B>(self, other: B) -> Patterns<Skip<Self>, Skip<B>>
     where
         Self: Sized,
-        B: Pattern<R>,
+        B: Pattern,
     {
         Patterns {
             first: self.skip(),
@@ -114,23 +126,33 @@ where
     }
 }
 
-impl<R> Pattern<R> for ()
-where
-    R: Read,
-{
+impl Pattern for () {
     type Token = ();
-    fn matching(&self, _: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, _: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(None)
     }
 }
 
-impl<R, F, T> Pattern<R> for F
+impl<'a> Pattern for &'a str {
+    type Token = String;
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        let tracker = chars.track();
+        for c in self.chars() {
+            if chars.take_if(c)?.is_none() {
+                chars.revert(tracker);
+                return Ok(None);
+            }
+        }
+        Ok(Some(tracker.loc.to(chars.loc).sp((*self).into())))
+    }
+}
+
+impl<F, T> Pattern for F
 where
-    R: Read,
-    F: Fn(&mut Chars<R>) -> TokenResult<T>,
+    F: Fn(&mut Chars) -> TokenResult<T>,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let tracker = chars.track();
         match self(chars) {
             Ok(Some(token)) => Ok(Some(tracker.loc.to(chars.loc).sp(token))),
@@ -143,14 +165,13 @@ where
     }
 }
 
-impl<R, A, B> Pattern<R> for Patterns<A, B>
+impl<A, B> Pattern for Patterns<A, B>
 where
-    R: Read,
-    A: Pattern<R>,
-    B: Pattern<R, Token = A::Token>,
+    A: Pattern,
+    B: Pattern<Token = A::Token>,
 {
     type Token = A::Token;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         match self.first.matching(chars) {
             Ok(None) => self.second.matching(chars),
             res => res,
@@ -162,12 +183,38 @@ where
 pub trait CharPattern {
     /// Check if the pattern matches a character
     fn matches(&self, c: char) -> bool;
-    /// Promote this to wrapper than implements [`Pattern`]
-    fn pattern(self) -> CharPatternWrapper<Self>
+    /// Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    fn any(self) -> TakeAtLeast<Self>
     where
         Self: Sized,
     {
-        CharPatternWrapper(self)
+        self.take(1..)
+    }
+    /**
+    Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    and matches if the length of matched strings lies within the given range
+
+    Unlike [`CharPattern::any`] or [`pattern::chars`] (which are equivalent), passing
+    this function can match empty strings by passing a range that contains `0`. For a use
+    case of this, see the example in the [`crate`] root.
+    */
+    fn take<N>(self, range: N) -> Take<Self, N>
+    where
+        Self: Sized,
+        N: RangeBounds<usize>,
+    {
+        Take {
+            pattern: self,
+            range,
+        }
+    }
+    /// Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    /// and matches if the length of matched strings lies within the given range
+    fn take_exact(self, n: usize) -> TakeExact<Self>
+    where
+        Self: Sized,
+    {
+        self.take(n..=n)
     }
 }
 
@@ -192,29 +239,10 @@ where
     }
 }
 
-/// A wrapper for implementors of [`CharPattern`] that implements [`Pattern`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct CharPatternWrapper<P>(pub P);
-
-impl<R, P> Pattern<R> for CharPatternWrapper<P>
-where
-    R: Read,
-    P: CharPattern,
-{
-    type Token = String;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
-        let mut token = String::new();
-        let start_loc = chars.loc;
-        while let Some(c) = chars.take_if(|c| self.0.matches(c))? {
-            token.push(c);
-        }
-        Ok(if token.is_empty() {
-            None
-        } else {
-            Some(start_loc.to(chars.loc).sp(token))
-        })
-    }
-}
+/// The pattern produced by [`CharPattern::any`] and [`chars`]
+pub type TakeAtLeast<P> = Take<P, RangeFrom<usize>>;
+/// The pattern produced by [`CharPattern::take_exact`]
+pub type TakeExact<P> = Take<P, RangeInclusive<usize>>;
 
 /// The pattern produced by [`Pattern::map`]
 pub struct Map<P, F> {
@@ -222,14 +250,13 @@ pub struct Map<P, F> {
     f: F,
 }
 
-impl<R, P, F, U> Pattern<R> for Map<P, F>
+impl<P, F, U> Pattern for Map<P, F>
 where
-    R: Read,
-    P: Pattern<R>,
+    P: Pattern,
     F: Fn(P::Token) -> U,
 {
     type Token = U;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self
             .pattern
             .matching(chars)?
@@ -238,24 +265,22 @@ where
 }
 
 /// The pattern produced by [`Pattern::parse`]
-pub struct Parse<R, P, T>
+pub struct Parse<P, T>
 where
-    R: Read,
-    P: Pattern<R>,
+    P: Pattern,
 {
     pattern: P,
-    pd: PhantomData<(T, R)>,
+    pd: PhantomData<T>,
 }
 
-impl<R, P, T> Pattern<R> for Parse<R, P, T>
+impl<P, T> Pattern for Parse<P, T>
 where
-    R: Read,
-    P: Pattern<R>,
+    P: Pattern,
     P::Token: AsRef<str>,
     T: FromStr,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self.pattern.matching(chars)?.and_then(|token| {
             token
                 .data
@@ -268,24 +293,18 @@ where
 }
 
 /// The pattern produced by [`Pattern::is`]
-pub struct Is<R, P, T>
-where
-    R: Read,
-    P: Pattern<R>,
-{
+pub struct Is<P, T> {
     pattern: P,
     val: T,
-    pd: PhantomData<R>,
 }
 
-impl<R, P, T> Pattern<R> for Is<R, P, T>
+impl<P, T> Pattern for Is<P, T>
 where
-    R: Read,
-    P: Pattern<R>,
+    P: Pattern,
     T: Clone,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars<R>) -> TokenResult<Sp<Self::Token>> {
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self
             .pattern
             .matching(chars)?
@@ -294,4 +313,74 @@ where
 }
 
 /// The pattern produced by [`Pattern::skip`]
-pub type Skip<R, P> = Is<R, P, ()>;
+pub type Skip<P> = Is<P, ()>;
+
+/// The pattern produced by [`Pattern::join`]
+pub struct Join<A, B, F>
+where
+    A: Pattern,
+    B: Pattern,
+{
+    a: A,
+    b: B,
+    f: F,
+}
+
+impl<A, B, F, T> Pattern for Join<A, B, F>
+where
+    A: Pattern,
+    B: Pattern,
+    F: Fn(A::Token, B::Token) -> T,
+{
+    type Token = T;
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Ok(if let Some(first) = self.a.matching(chars)? {
+            self.b.matching(chars)?.map(|second| {
+                first
+                    .span
+                    .start
+                    .to(second.span.end)
+                    .sp((self.f)(first.data, second.data))
+            })
+        } else {
+            None
+        })
+    }
+}
+
+/// The pattern produced by [`CharPattern::take`]
+pub struct Take<P, N> {
+    pattern: P,
+    range: N,
+}
+
+impl<P, N> Pattern for Take<P, N>
+where
+    P: CharPattern,
+    N: RangeBounds<usize>,
+{
+    type Token = String;
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        let mut token = String::new();
+        let tracker = chars.track();
+        while let Some(c) = chars.take_if(|c| self.pattern.matches(c))? {
+            token.push(c);
+            match self.range.end_bound() {
+                Bound::Excluded(n) if token.len() + 1 == *n => break,
+                Bound::Included(n) if token.len() == *n => break,
+                _ => {}
+            }
+        }
+        let long_enough = match self.range.start_bound() {
+            Bound::Excluded(n) if token.len() > *n => true,
+            Bound::Included(n) if token.len() >= *n => true,
+            Bound::Unbounded => true,
+            _ => false,
+        };
+        Ok(if long_enough {
+            Some(tracker.loc.to(chars.loc).sp(token))
+        } else {
+            None
+        })
+    }
+}

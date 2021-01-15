@@ -13,16 +13,16 @@ pub enum Token {
 
 fn main() {
     // Pattern for matching numbers
-    let number = "-0123456789.e".pattern().parse::<f32>().map(Token::Number);
+    let number = "-0123456789.e".any().parse::<f32>().map(Token::Number);
     // All patterns in order
     let patterns = '+'
-        .pattern()
+        .any()
         .is(Token::Add)
-        .or('-'.pattern().is(Token::Sub))
-        .or('*'.pattern().is(Token::Mul))
-        .or('/'.pattern().is(Token::Div))
-        .or('('.pattern().is(Token::OpenParen))
-        .or(')'.pattern().is(Token::CloseParen))
+        .or('-'.any().is(Token::Sub))
+        .or('*'.any().is(Token::Mul))
+        .or('/'.any().is(Token::Div))
+        .or('('.any().is(Token::OpenParen))
+        .or(')'.any().is(Token::CloseParen))
         .or(number);
 
     // A list of test inputs
@@ -31,7 +31,7 @@ fn main() {
         println!("input: {}", input);
         println!("tokens:");
         for token in Chars::new(input.as_bytes())
-            .tokenize(&patterns, &char::is_whitespace.pattern())
+            .tokenize(&patterns, &char::is_whitespace.any())
             .unwrap()
         {
             println!("  {:<20} {}", format!("{:?}", token.data), token.span)

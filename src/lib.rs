@@ -2,6 +2,124 @@
 
 /*!
 This crate implements a simple interface for building lexical analyzers.
+
+# Usage
+
+## The [`Chars`] struct
+
+[`Chars`] wraps a [`Read`]er, parses characters from it, and allows reversion to previous positions.
+It is the main struct used for lexing.
+
+## The [`Pattern`] trait
+
+Lexers are defined by a series of patterns that attempt to match and consume input from the input.
+Patterns can be transformed and composed to create the lexer rules.
+
+[`Pattern`] is implemented for
+- `&str`, which attempts to match itself exactly
+- Anything that implements `Fn(&mut Chars) -> TokenResult<T>` where `T` is the token type
+- The [`pattern::Patterns`] struct, which tries two patterns in order
+- Any of the combinators from the [`pattern`] module, which are created via methods of [`Pattern`] and [`CharPattern`]
+
+## The [`CharPattern`] trait
+
+Rather than matching strings of text, the [`CharPattern`] trait accepts or rejects individual characters.
+A [`CharPattern`] can be promoted to a [`Pattern`] using either [`pattern::chars`] or [`CharPattern::any`].
+
+# Custom [`Pattern`] functions
+
+Custom patterns can be created easily by simply defining functions with the signature
+`fn(&mut Chars) -> TokenResult<T>` where `T` is the token type.
+
+Here is a simple example example of a pattern than matches a string literal:
+
+```
+use tokenate::*;
+
+fn string_literal(chars: &mut Chars) -> TokenResult<String> {
+    Ok(if chars.take_if(|c| c == '"')?.is_some() {
+        let mut arg = String::new();
+        let mut escaped = false;
+        while let Some(c) = chars.take()? {
+            match c {
+                '\\' if escaped.take() => arg.push('\\'),
+                '\\' => escaped = true,
+                '"' if escaped.take() => arg.push('"'),
+                '"' => break,
+                'n' if escaped.take() => arg.push('\n'),
+                'r' if escaped.take() => arg.push('\r'),
+                't' if escaped.take() => arg.push('\t'),
+                c if escaped =>
+                    return Err(LexError::Custom(format!("Invalid escape char: {:?}", c))),
+                c => arg.push(c),
+            }
+        }
+        Some(arg)
+    } else {
+        None
+    })
+}
+
+Chars::new("\" Hi there!\"".as_bytes()).tokenize(&string_literal, &()).unwrap();
+```
+
+# Simple Lexer Example
+
+This simple examble attempts to tokenize a simple grammar that consists of boolean literals, floating-point number literals, and C-like identifiers.
+
+```
+use tokenate::*;
+
+/// Our token type
+#[derive(Debug, PartialEq)]
+enum Token {
+    Number(f32),
+    Bool(bool),
+    Ident(String),
+}
+
+// The bool pattern
+let bools = "true".is(true).or("false".is(false)).map(Token::Bool);
+
+// The number pattern
+let numbers = "0123456789-.e".any().parse::<f32>().map(Token::Number);
+
+// Helper functions for the ident pattern
+let ident_start = |c: char| c.is_alphabetic() && (c as u32) < 127 || c == '_';
+let ident_body = |c: char| ident_start(c) || c.is_digit(10);
+// The ident pattern
+let idents = ident_start
+    .take_exact(1)
+    .join(ident_body.take(..), |start, body| start + &body)
+    .map(Token::Ident);
+
+// The full pattern
+// It is important that idents come after bools here, or else "true" and "false" would
+// get tokenized as idents
+let pattern = bools.or(numbers).or(idents);
+
+// The pattern used to skip whitespace
+// Without this, the tokenization would fail upon encountering whitespace
+let skip = char::is_whitespace.any();
+
+// Our test input
+let input = "true foo -3.2 fals _2";
+
+// Lex
+let tokens = Chars::new(input.as_bytes())
+    .tokenize(&pattern, &skip)
+    .unwrap();
+
+let expected = vec![
+    Token::Bool(true),
+    Token::Ident("foo".into()),
+    Token::Number(-3.2),
+    Token::Ident("fals".into()),
+    Token::Ident("_2".into()),
+];
+
+assert_eq!(tokens, expected);
+```
 */
 
 pub mod pattern;
@@ -26,6 +144,8 @@ pub enum LexError {
     IO(io::Error),
     /// No patterns matched the remaining input
     InvalidInput(String),
+    /// A custom message
+    Custom(String),
 }
 
 impl Display for LexError {
@@ -42,6 +162,7 @@ impl Display for LexError {
                     ""
                 }
             ),
+            LexError::Custom(message) => message.fmt(f),
         }
     }
 }
@@ -111,7 +232,7 @@ impl Display for Span {
     }
 }
 
-/// A piece of data with an attached span
+/// A piece of data with an attached [`Span`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sp<T> {
     /// The spanned data
@@ -137,6 +258,15 @@ impl<T> Sp<T> {
     }
 }
 
+impl<T> PartialEq<T> for Sp<T>
+where
+    T: PartialEq,
+{
+    fn eq(&self, other: &T) -> bool {
+        &self.data == other
+    }
+}
+
 impl<T> Display for Sp<T>
 where
     T: Display,
@@ -147,32 +277,30 @@ where
 }
 
 /// Parses characters from a reader
-pub struct Chars<R>
-where
-    R: Read,
-{
-    chars: CodePoints<Bytes<R>>,
+pub struct Chars {
+    chars: CodePoints<Bytes<Box<dyn Read>>>,
     history: SmallVec<[char; 32]>,
     cursor: usize,
     revert_trackers: usize,
     loc: Loc,
 }
 
-impl<R> From<R> for Chars<R>
+impl<R> From<R> for Chars
 where
-    R: Read,
+    R: Read + 'static,
 {
     fn from(reader: R) -> Self {
         Chars::new(reader)
     }
 }
 
-impl<R> Chars<R>
-where
-    R: Read,
-{
+impl Chars {
     /// Create a new `Chars` from a reader
-    pub fn new(reader: R) -> Self {
+    pub fn new<R>(reader: R) -> Self
+    where
+        R: Read + 'static,
+    {
+        let reader: Box<dyn Read> = Box::new(reader);
         Chars {
             chars: reader.bytes().into(),
             history: SmallVec::new(),
@@ -188,14 +316,21 @@ where
     fn put_back(&mut self) {
         self.cursor -= 1;
     }
-    fn track(&mut self) -> ReverHandle {
+    /// Get a reversion handle to the current input position
+    ///
+    /// [`Chars::tokenize`] handles this automatically, so you shouldn't normally need to call this function
+    pub fn track(&mut self) -> RevertHandle {
         self.revert_trackers += 1;
-        ReverHandle {
+        RevertHandle {
             loc: self.loc,
             cursor: self.cursor,
         }
     }
-    fn revert(&mut self, handle: ReverHandle) {
+    /// Revert to the position defined by a reversion handle
+    ///
+    /// This is used to revert to a previous input position when a pattern fails to match.
+    /// [`Chars::tokenize`] handles this automatically, so you shouldn't normally need to call this function
+    pub fn revert(&mut self, handle: RevertHandle) {
         self.loc = handle.loc;
         self.cursor = handle.cursor;
         self.revert_trackers -= 1;
@@ -271,7 +406,7 @@ where
     /// Attempt to match a pattern and consume a token
     pub fn matching<P>(&mut self, pattern: &P) -> TokenResult<Sp<P::Token>>
     where
-        P: Pattern<R>,
+        P: Pattern,
     {
         pattern.matching(self)
     }
@@ -285,9 +420,8 @@ where
     */
     pub fn tokenize<M, S, T>(&mut self, matching: &M, skip: &S) -> LexResult<Vec<Sp<T>>>
     where
-        M: Pattern<R, Token = T>,
-        S: Pattern<R>,
-        T: fmt::Debug,
+        M: Pattern<Token = T>,
+        S: Pattern,
     {
         let mut tokens = Vec::new();
         while self.peek()?.is_some() {
@@ -303,9 +437,18 @@ where
     }
 }
 
-struct ReverHandle {
+/// A handle to a position in the lexer input which can be used to revert to that position
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RevertHandle {
     loc: Loc,
     cursor: usize,
+}
+
+impl RevertHandle {
+    /// Get the location of the reversion handle
+    pub fn loc(&self) -> Loc {
+        self.loc
+    }
 }
 
 /// Get the state of a [`bool`] and setting it to `false` in one line

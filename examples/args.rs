@@ -3,18 +3,14 @@ This example implements a simple command-line style argument parser
 where arguments are seperated by whitespace unless delimited by double quotes
 */
 
-use std::io::Read;
-
 use tokenate::*;
 
 /// Try to tokenize a quoted arg
-fn quoted_arg<R: Read>(chars: &mut Chars<R>) -> TokenResult<String> {
+fn quoted_arg(chars: &mut Chars) -> TokenResult<String> {
     Ok(if chars.take_if(|c| c == '"')?.is_some() {
         let mut arg = String::new();
-        let mut escaped = false;
         while let Some(c) = chars.take()? {
             match c {
-                '"' if escaped.take() => arg.push('"'),
                 '"' => break,
                 c => arg.push(c),
             }
@@ -45,7 +41,7 @@ fn main() {
 
         for arg in chars
             // Match the patterns and skip whitespace
-            .tokenize(&patterns, &char::is_whitespace.pattern())
+            .tokenize(&patterns, &char::is_whitespace.any())
             .unwrap()
         {
             println!("  {:<20}{}", arg.data, arg.span)
