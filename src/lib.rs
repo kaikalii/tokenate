@@ -1,6 +1,7 @@
 pub mod pattern;
 
 use std::{
+    error::Error,
     fmt::{self, Display, Formatter},
     io::{self, Bytes, Read},
 };
@@ -11,24 +12,36 @@ pub use pattern::{CharPattern, Pattern};
 
 const INVALID_INPUT_MAX_LEN: usize = 30;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum LexError {
-    #[error("{0}")]
-    IO(#[from] io::Error),
-    #[error("Unable to tokenize {}", format_invalid_input(.0))]
+    IO(io::Error),
     InvalidInput(String),
 }
 
-fn format_invalid_input(s: &str) -> String {
-    format!(
-        "Unable to tokenize {:?}{}",
-        s,
-        if s.len() >= INVALID_INPUT_MAX_LEN {
-            "..."
-        } else {
-            ""
+impl Display for LexError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            LexError::IO(e) => e.fmt(f),
+            LexError::InvalidInput(s) => write!(
+                f,
+                "Unable to tokenize {:?}{}",
+                s,
+                if s.len() >= INVALID_INPUT_MAX_LEN {
+                    "..."
+                } else {
+                    ""
+                }
+            ),
         }
-    )
+    }
+}
+
+impl Error for LexError {}
+
+impl From<io::Error> for LexError {
+    fn from(e: io::Error) -> Self {
+        LexError::IO(e)
+    }
 }
 
 pub type LexResult<T> = Result<T, LexError>;
@@ -113,6 +126,7 @@ where
     chars: CodePoints<Bytes<R>>,
     history: Vec<char>,
     cursor: usize,
+    revert_trackers: usize,
     loc: Loc,
 }
 
@@ -134,6 +148,7 @@ where
             chars: reader.bytes().into(),
             history: Vec::new(),
             cursor: 0,
+            revert_trackers: 0,
             loc: Loc::new(1, 1),
         }
     }
@@ -142,6 +157,22 @@ where
     }
     fn put_back(&mut self) {
         self.cursor -= 1;
+    }
+    fn track(&mut self) -> ReverHandle {
+        self.revert_trackers += 1;
+        ReverHandle {
+            loc: self.loc,
+            cursor: self.cursor,
+        }
+    }
+    fn revert(&mut self, handle: ReverHandle) {
+        self.loc = handle.loc;
+        self.cursor = handle.cursor;
+        self.revert_trackers -= 1;
+        if self.revert_trackers == 0 {
+            self.cursor = 0;
+            self.history.clear();
+        }
     }
     pub fn peek(&mut self) -> io::Result<Option<char>> {
         Ok(if let Some(c) = self.history.get(self.cursor) {
@@ -194,10 +225,6 @@ where
             }
         }))
     }
-    fn revert(&mut self, cursor: usize, loc: Loc) {
-        self.loc = loc;
-        self.cursor = cursor;
-    }
     pub fn invalid_input<T>(&mut self) -> LexResult<T> {
         Err(LexError::InvalidInput(
             self.take_iter()
@@ -220,17 +247,21 @@ where
     {
         let mut tokens = Vec::new();
         while self.peek()?.is_some() {
-            let start_cursor = self.cursor;
-            let start_loc = self.loc;
+            let tracker = self.track();
             if let Some(token) = self.matching(matching)? {
                 tokens.push(token);
             } else if self.matching(skip)?.is_none() {
-                self.revert(start_cursor, start_loc);
+                self.revert(tracker);
                 return self.invalid_input();
             }
         }
         Ok(tokens)
     }
+}
+
+struct ReverHandle {
+    loc: Loc,
+    cursor: usize,
 }
 
 pub trait BoolTake {

@@ -6,7 +6,6 @@ edition = '2018'
 
 [dependencies]
 unicode_reader = '1.0.1'
-thiserror = '1.0.23'
 
 [[example]]
 name = 'args'
