@@ -1,5 +1,7 @@
 //! The [`Pattern`] trait, its combinators, and some helper functions for patterns
 
+#[cfg(feature = "debug")]
+use std::{cell::Cell, iter::repeat};
 use std::{
     marker::PhantomData,
     ops::{Bound, RangeBounds, RangeFrom, RangeInclusive},
@@ -11,6 +13,19 @@ use crate::*;
 /// Check if a `char` is not whitespace
 pub fn not_whitespace(c: char) -> bool {
     !c.is_whitespace()
+}
+
+fn ptr_name<T>(r: &T) -> String
+where
+    T: ?Sized,
+{
+    format!(
+        "<{}>",
+        format!("{:x}", r as *const T as *const u8 as usize)
+            .chars()
+            .rev()
+            .collect::<String>()
+    )
 }
 
 /// Create a [`Pattern`] from a [`CharPattern`]
@@ -30,6 +45,11 @@ pub struct Patterns<A, B> {
     pub second: B,
 }
 
+thread_local! {
+    #[cfg(feature = "debug")]
+    static DEBUG_INDENT: Cell<usize> = Cell::new(0);
+}
+
 /**
 Defines a token pattern
 */
@@ -37,7 +57,62 @@ pub trait Pattern {
     /// The type of the token that is produced if the pattern matches
     type Token;
     /// Try to match the pattern and consume a token from [`Chars`]
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>>;
+    ///
+    /// This method should be implemented but not directly called
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>>;
+    /// Try to match the pattern and consume a token from [`Chars`]
+    ///
+    /// This method should be called but not implemented
+    #[allow(clippy::let_and_return)]
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        #[cfg(feature = "debug")]
+        {
+            DEBUG_INDENT.with(|indent| {
+                println!(
+                    "{}trying {}",
+                    repeat("    ").take(indent.get()).collect::<String>(),
+                    self.name()
+                );
+                indent.set(indent.get() + 1);
+            });
+        }
+        let res = match self.try_match(chars) {
+            Ok(Some(token)) => {
+                #[cfg(feature = "debug")]
+                {
+                    DEBUG_INDENT.with(|indent| {
+                        indent.set(indent.get() - 1);
+                        println!(
+                            "{}{} succeeded",
+                            repeat("    ").take(indent.get()).collect::<String>(),
+                            self.name()
+                        );
+                    });
+                }
+                Ok(Some(token))
+            }
+            Ok(None) => {
+                #[cfg(feature = "debug")]
+                {
+                    DEBUG_INDENT.with(|indent| {
+                        indent.set(indent.get() - 1);
+                        println!(
+                            "{}{} failed",
+                            repeat("    ").take(indent.get()).collect::<String>(),
+                            self.name()
+                        );
+                    });
+                }
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        };
+        res
+    }
+    /// Get a user-friendly name for the pattern
+    fn name(&self) -> String {
+        ptr_name(self)
+    }
     /// Combine this pattern with another. If matching this pattern fails,
     /// the other pattern will be tried
     fn or<B>(self, other: B) -> Patterns<Self, B>
@@ -128,14 +203,17 @@ pub trait Pattern {
 
 impl Pattern for () {
     type Token = ();
-    fn matching(&self, _: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, _: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(None)
+    }
+    fn name(&self) -> String {
+        "unit".into()
     }
 }
 
 impl<'a> Pattern for &'a str {
     type Token = String;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let tracker = chars.track();
         for c in self.chars() {
             if chars.take_if(c)?.is_none() {
@@ -145,6 +223,9 @@ impl<'a> Pattern for &'a str {
         }
         Ok(Some(tracker.loc.to(chars.loc).sp((*self).into())))
     }
+    fn name(&self) -> String {
+        (*self).into()
+    }
 }
 
 impl<F, T> Pattern for F
@@ -152,7 +233,7 @@ where
     F: Fn(&mut Chars) -> TokenResult<T>,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let tracker = chars.track();
         match self(chars) {
             Ok(Some(token)) => Ok(Some(tracker.loc.to(chars.loc).sp(token))),
@@ -163,6 +244,9 @@ where
             Err(e) => Err(e),
         }
     }
+    fn name(&self) -> String {
+        format!("fn({})", ptr_name(self))
+    }
 }
 
 impl<A, B> Pattern for Patterns<A, B>
@@ -171,18 +255,24 @@ where
     B: Pattern<Token = A::Token>,
 {
     type Token = A::Token;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         match self.first.matching(chars) {
             Ok(None) => self.second.matching(chars),
             res => res,
         }
     }
+    fn name(&self) -> String {
+        format!("({} or {})", self.first.name(), self.second.name())
+    }
 }
 
 impl<T> Pattern for Box<dyn Pattern<Token = T>> {
     type Token = T;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Box::as_ref(&self).matching(chars)
+    }
+    fn name(&self) -> String {
+        format!("box({})", Box::as_ref(&self).name())
     }
 }
 
@@ -263,11 +353,14 @@ where
     F: Fn(P::Token) -> U,
 {
     type Token = U;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self
             .pattern
             .matching(chars)?
             .map(|token| token.map(&self.f)))
+    }
+    fn name(&self) -> String {
+        format!("map({})", self.pattern.name())
     }
 }
 
@@ -287,7 +380,7 @@ where
     T: FromStr,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self.pattern.matching(chars)?.and_then(|token| {
             token
                 .data
@@ -296,6 +389,9 @@ where
                 .ok()
                 .map(|parsed| token.span.sp(parsed))
         }))
+    }
+    fn name(&self) -> String {
+        format!("parse({})", self.pattern.name())
     }
 }
 
@@ -311,11 +407,14 @@ where
     T: Clone,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(self
             .pattern
             .matching(chars)?
             .map(|token| token.span.sp(self.val.clone())))
+    }
+    fn name(&self) -> String {
+        format!("is({})", self.pattern.name())
     }
 }
 
@@ -340,7 +439,7 @@ where
     F: Fn(A::Token, B::Token) -> T,
 {
     type Token = T;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         Ok(if let Some(first) = self.a.matching(chars)? {
             self.b.matching(chars)?.map(|second| {
                 first
@@ -352,6 +451,9 @@ where
         } else {
             None
         })
+    }
+    fn name(&self) -> String {
+        format!("{} + {}", self.a.name(), self.b.name())
     }
 }
 
@@ -367,7 +469,7 @@ where
     N: RangeBounds<usize>,
 {
     type Token = String;
-    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let mut token = String::new();
         let tracker = chars.track();
         while let Some(c) = chars.take_if(|c| self.pattern.matches(c))? {
@@ -389,5 +491,8 @@ where
         } else {
             None
         })
+    }
+    fn name(&self) -> String {
+        "take".into()
     }
 }

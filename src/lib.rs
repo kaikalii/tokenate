@@ -403,13 +403,6 @@ impl<'a> Chars<'a> {
                 .collect(),
         ))
     }
-    /// Attempt to match a pattern and consume a token
-    pub fn matching<P>(&mut self, pattern: &P) -> TokenResult<Sp<P::Token>>
-    where
-        P: Pattern,
-    {
-        pattern.matching(self)
-    }
     /**
     Attempt to fully tokenize the remaining input
 
@@ -426,9 +419,9 @@ impl<'a> Chars<'a> {
         let mut tokens = Vec::new();
         while self.peek()?.is_some() {
             let tracker = self.track();
-            if let Some(token) = self.matching(matching)? {
+            if let Some(token) = matching.matching(self)? {
                 tokens.push(token);
-            } else if self.matching(skip)?.is_none() {
+            } else if skip.matching(self)?.is_none() {
                 self.revert(tracker);
                 return self.invalid_input();
             }

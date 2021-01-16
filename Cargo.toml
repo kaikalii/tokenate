@@ -1,24 +1,28 @@
 [package]
-name = 'tokenate'
-version = '0.1.0'
 authors = ['Kai Schmidt <kai.schmidt@constructioninnovations.com>']
-edition = '2018'
-readme = 'readme.md'
-license = 'MIT'
+categories = ['parsing']
 description = 'A simple interface for writing lexical analyzers'
 documentation = 'https://docs.rs/tokenate'
-repository = 'https://github.com/kaikalii/tokenate'
+edition = '2018'
 keywords = [
-    'token',
-    'lexer',
-    'lexical',
-    'parse',
+  'token',
+  'lexer',
+  'lexical',
+  'parse',
 ]
-categories = ['parsing']
+license = 'MIT'
+name = 'tokenate'
+readme = 'readme.md'
+repository = 'https://github.com/kaikalii/tokenate'
+version = '0.1.0'
 
 [dependencies]
-unicode_reader = '1.0.1'
 smallvec = '1.6.1'
+unicode_reader = '1.0.1'
+
+[features]
+debug = []
+default = []
 
 [[example]]
 name = 'args'
