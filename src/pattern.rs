@@ -76,6 +76,7 @@ pub trait Pattern {
                 indent.set(indent.get() + 1);
             });
         }
+        let tracker = chars.track();
         let res = match self.try_match(chars) {
             Ok(Some(token)) => {
                 #[cfg(feature = "debug")]
@@ -103,6 +104,7 @@ pub trait Pattern {
                         );
                     });
                 }
+                chars.revert(tracker);
                 Ok(None)
             }
             Err(e) => Err(e),
@@ -214,14 +216,13 @@ impl Pattern for () {
 impl<'a> Pattern for &'a str {
     type Token = String;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
-        let tracker = chars.track();
+        let start_loc = chars.loc;
         for c in self.chars() {
             if chars.take_if(c)?.is_none() {
-                chars.revert(tracker);
                 return Ok(None);
             }
         }
-        Ok(Some(tracker.loc.to(chars.loc).sp((*self).into())))
+        Ok(Some(start_loc.to(chars.loc).sp((*self).into())))
     }
     fn name(&self) -> String {
         (*self).into()
@@ -234,13 +235,10 @@ where
 {
     type Token = T;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
-        let tracker = chars.track();
+        let start_loc = chars.loc;
         match self(chars) {
-            Ok(Some(token)) => Ok(Some(tracker.loc.to(chars.loc).sp(token))),
-            Ok(None) => {
-                chars.revert(tracker);
-                Ok(None)
-            }
+            Ok(Some(token)) => Ok(Some(start_loc.to(chars.loc).sp(token))),
+            Ok(None) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -280,6 +278,10 @@ impl<T> Pattern for Box<dyn Pattern<Token = T>> {
 pub trait CharPattern {
     /// Check if the pattern matches a character
     fn matches(&self, c: char) -> bool;
+    /// Get a user friendly name for the pattern
+    fn name(&self) -> String {
+        ptr_name(self)
+    }
     /// Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
     fn any(self) -> TakeAtLeast<Self>
     where
@@ -319,11 +321,17 @@ impl CharPattern for char {
     fn matches(&self, c: char) -> bool {
         self == &c
     }
+    fn name(&self) -> String {
+        format!("{:?}", self)
+    }
 }
 
 impl<'a> CharPattern for &'a str {
     fn matches(&self, c: char) -> bool {
         self.contains(c)
+    }
+    fn name(&self) -> String {
+        format!("{:?}", self)
     }
 }
 
@@ -333,6 +341,9 @@ where
 {
     fn matches(&self, c: char) -> bool {
         self(c)
+    }
+    fn name(&self) -> String {
+        format!("fn({})", ptr_name(self))
     }
 }
 
@@ -471,7 +482,7 @@ where
     type Token = String;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let mut token = String::new();
-        let tracker = chars.track();
+        let start_loc = chars.loc;
         while let Some(c) = chars.take_if(|c| self.pattern.matches(c))? {
             token.push(c);
             match self.range.end_bound() {
@@ -487,12 +498,12 @@ where
             _ => false,
         };
         Ok(if long_enough {
-            Some(tracker.loc.to(chars.loc).sp(token))
+            Some(start_loc.to(chars.loc).sp(token))
         } else {
             None
         })
     }
     fn name(&self) -> String {
-        "take".into()
+        format!("take({})", self.pattern.name())
     }
 }
