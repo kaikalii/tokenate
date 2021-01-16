@@ -179,6 +179,13 @@ where
     }
 }
 
+impl<T> Pattern for Box<dyn Pattern<Token = T>> {
+    type Token = T;
+    fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Box::as_ref(&self).matching(chars)
+    }
+}
+
 /// A pattern than either accepts or rejects individual characters
 pub trait CharPattern {
     /// Check if the pattern matches a character

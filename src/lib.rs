@@ -277,28 +277,28 @@ where
 }
 
 /// Parses characters from a reader
-pub struct Chars {
-    chars: CodePoints<Bytes<Box<dyn Read>>>,
+pub struct Chars<'a> {
+    chars: CodePoints<Bytes<Box<dyn Read + 'a>>>,
     history: SmallVec<[char; 32]>,
     cursor: usize,
     revert_trackers: usize,
     loc: Loc,
 }
 
-impl<R> From<R> for Chars
+impl<'a, R> From<R> for Chars<'a>
 where
-    R: Read + 'static,
+    R: Read + 'a,
 {
     fn from(reader: R) -> Self {
         Chars::new(reader)
     }
 }
 
-impl Chars {
+impl<'a> Chars<'a> {
     /// Create a new `Chars` from a reader
     pub fn new<R>(reader: R) -> Self
     where
-        R: Read + 'static,
+        R: Read + 'a,
     {
         let reader: Box<dyn Read> = Box::new(reader);
         Chars {
@@ -377,8 +377,8 @@ impl Chars {
         })
     }
     /// Get an iterator over the characters
-    pub fn take_iter(&mut self) -> impl Iterator<Item = io::Result<char>> + '_ {
-        std::iter::from_fn(move || self.take().transpose())
+    pub fn take_iter<'b>(&'b mut self) -> TakeIter<'a, 'b> {
+        TakeIter { chars: self }
     }
     /// Take a character if it satisfies the [`CharPattern`]
     pub fn take_if<P>(&mut self, pattern: P) -> io::Result<Option<char>>
@@ -434,6 +434,18 @@ impl Chars {
             }
         }
         Ok(tokens)
+    }
+}
+
+/// The iterator returned by [`Chars::take_iter`]
+pub struct TakeIter<'a, 'b> {
+    chars: &'b mut Chars<'a>,
+}
+
+impl Iterator for TakeIter<'_, '_> {
+    type Item = io::Result<char>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.chars.take().transpose()
     }
 }
 
