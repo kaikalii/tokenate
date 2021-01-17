@@ -123,7 +123,7 @@ pub mod pattern;
 
 use std::{
     error::Error,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     io::{self, Bytes, Read},
     ops::BitOr,
 };
@@ -149,7 +149,7 @@ pub enum LexError {
 impl Display for LexError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            LexError::IO(e) => e.fmt(f),
+            LexError::IO(e) => Display::fmt(e, f),
             LexError::InvalidInput(s) => write!(
                 f,
                 "Unable to tokenize {:?}{}",
@@ -160,7 +160,7 @@ impl Display for LexError {
                     ""
                 }
             ),
-            LexError::Custom(message) => message.fmt(f),
+            LexError::Custom(message) => Display::fmt(message, f),
         }
     }
 }
@@ -179,7 +179,7 @@ pub type LexResult<T> = Result<T, LexError>;
 pub type TokenResult<T> = LexResult<Option<T>>;
 
 /// A location in a lexer input
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Loc {
     /// The line
     pub line: usize,
@@ -195,6 +195,12 @@ impl Loc {
     /// Create a [`Span`] with this location as the start
     pub fn to(self, end: Self) -> Span {
         Span::new(self, end)
+    }
+}
+
+impl Debug for Loc {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -238,7 +244,7 @@ impl BitOr for Span {
 }
 
 /// A piece of data with an attached [`Span`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sp<T> {
     /// The spanned data
     pub data: T,
@@ -280,6 +286,16 @@ where
 {
     fn eq(&self, other: &T) -> bool {
         &self.data == other
+    }
+}
+
+impl<T> Debug for Sp<T>
+where
+    T: Debug,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        Debug::fmt(&self.data, f)?;
+        write!(f, " [{}]", self.span)
     }
 }
 
