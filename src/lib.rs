@@ -125,6 +125,7 @@ use std::{
     error::Error,
     fmt::{self, Display, Formatter},
     io::{self, Bytes, Read},
+    ops::BitOr,
 };
 
 use smallvec::SmallVec;
@@ -229,6 +230,13 @@ impl Display for Span {
     }
 }
 
+impl BitOr for Span {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self::Output {
+        Span::new(self.start.min(other.start), self.end.max(other.end))
+    }
+}
+
 /// A piece of data with an attached [`Span`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Sp<T> {
@@ -251,6 +259,17 @@ impl<T> Sp<T> {
         Sp {
             data: f(self.data),
             span: self.span,
+        }
+    }
+    /// Combine two pieces of spanned data with the given function and span
+    /// the result with a span than contains both originals spans
+    pub fn join<U, F, J>(self, other: Sp<U>, f: F) -> Sp<J>
+    where
+        F: FnOnce(T, U) -> J,
+    {
+        Sp {
+            data: f(self.data, other.data),
+            span: self.span | other.span,
         }
     }
 }
