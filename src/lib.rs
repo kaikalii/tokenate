@@ -82,16 +82,13 @@ enum Token {
 let bools = "true".is(true).or("false".is(false)).map(Token::Bool);
 
 // The number pattern
-let numbers = "0123456789-.e".any().parse::<f32>().map(Token::Number);
+let numbers = "0123456789-+.e".any().parse::<f32>().map(Token::Number);
 
 // Helper functions for the ident pattern
 let ident_start = |c: char| c.is_alphabetic() && (c as u32) < 127 || c == '_';
 let ident_body = |c: char| ident_start(c) || c.is_digit(10);
 // The ident pattern
-let idents = ident_start
-    .take_exact(1)
-    .join(ident_body.take(..), |start, body| start + &body)
-    .map(Token::Ident);
+let idents = pattern::ident(ident_start, ident_body).map(Token::Ident);
 
 // The full pattern
 // It is important that idents come after bools here, or else "true" and "false" would

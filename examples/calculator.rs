@@ -13,16 +13,14 @@ pub enum Token {
 
 fn main() {
     // Pattern for matching numbers
-    let number = "-0123456789.e".any().parse::<f32>().map(Token::Number);
+    let number = "0123456789+-.e".any().parse::<f32>().map(Token::Number);
     // All patterns in order
-    let patterns = '+'
-        .any()
-        .is(Token::Add)
-        .or('-'.any().is(Token::Sub))
-        .or('*'.any().is(Token::Mul))
-        .or('/'.any().is(Token::Div))
-        .or('('.any().is(Token::OpenParen))
-        .or(')'.any().is(Token::CloseParen))
+    let patterns = ('+'.is(Token::Add))
+        .or('-'.is(Token::Sub))
+        .or('*'.is(Token::Mul))
+        .or('/'.is(Token::Div))
+        .or('('.is(Token::OpenParen))
+        .or(')'.is(Token::CloseParen))
         .or(number);
 
     // A list of test inputs

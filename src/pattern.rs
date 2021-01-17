@@ -15,6 +15,20 @@ pub fn not_whitespace(c: char) -> bool {
     !c.is_whitespace()
 }
 
+/// Create a pattern that matches an identifier
+///
+/// The `first_char` pattern matches the first character in the identifier.
+/// The `other_chars` pattern matches the rest.
+pub fn ident<A, B>(first_char: A, other_chars: B) -> impl Pattern<Token = String>
+where
+    A: CharPattern,
+    B: CharPattern,
+{
+    first_char
+        .take_exact(1)
+        .join(other_chars.take(..), |first, others| first + &others)
+}
+
 fn ptr_name<T>(r: &T) -> String
 where
     T: ?Sized,
@@ -213,6 +227,16 @@ impl Pattern for () {
     }
 }
 
+impl<'a> Pattern for char {
+    type Token = String;
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        self.take_exact(1).matching(chars)
+    }
+    fn name(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 impl<'a> Pattern for &'a str {
     type Token = String;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
@@ -225,7 +249,7 @@ impl<'a> Pattern for &'a str {
         Ok(Some(start_loc.to(chars.loc).sp((*self).into())))
     }
     fn name(&self) -> String {
-        (*self).into()
+        format!("{:?}", self)
     }
 }
 
