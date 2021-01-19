@@ -278,6 +278,10 @@ impl<T> Sp<T> {
             span: self.span | other.span,
         }
     }
+    /// Get a spanned reference to the data
+    pub fn as_ref(&self) -> Sp<&T> {
+        self.span.sp(&self.data)
+    }
 }
 
 impl<T> PartialEq<T> for Sp<T>
