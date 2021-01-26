@@ -37,10 +37,10 @@ Here is a simple example example of a pattern than matches a string literal:
 use tokenate::*;
 
 fn string_literal(chars: &mut Chars) -> TokenResult<String> {
-    Ok(if chars.take_if(|c| c == '"')?.is_some() {
+    Ok(if chars.take_if(|c| c == '"').map_err(|e| chars.error(e))?.is_some() {
         let mut arg = String::new();
         let mut escaped = false;
-        while let Some(c) = chars.take()? {
+        while let Some(c) = chars.take().map_err(|e| chars.error(e))? {
             match c {
                 '\\' if escaped.take() => arg.push('\\'),
                 '\\' => escaped = true,
@@ -49,8 +49,9 @@ fn string_literal(chars: &mut Chars) -> TokenResult<String> {
                 'n' if escaped.take() => arg.push('\n'),
                 'r' if escaped.take() => arg.push('\r'),
                 't' if escaped.take() => arg.push('\t'),
-                c if escaped =>
-                    return Err(LexError::Custom(format!("Invalid escape char: {:?}", c))),
+                c if escaped => return Err(
+                    chars.error(format!("Invalid escape char: {:?}", c))
+                ),
                 c => arg.push(c),
             }
         }
@@ -135,9 +136,9 @@ pub use pattern::{CharPattern, Pattern};
 
 const INVALID_INPUT_MAX_LEN: usize = 30;
 
-/// An error that occurs when lexing
+/// An error type for [`LexError`]
 #[derive(Debug)]
-pub enum LexError {
+pub enum LexErrorType {
     /// An IO error
     IO(io::Error),
     /// No patterns matched the remaining input
@@ -146,11 +147,11 @@ pub enum LexError {
     Custom(String),
 }
 
-impl Display for LexError {
+impl Display for LexErrorType {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            LexError::IO(e) => Display::fmt(e, f),
-            LexError::InvalidInput(s) => write!(
+            LexErrorType::IO(e) => Display::fmt(e, f),
+            LexErrorType::InvalidInput(s) => write!(
                 f,
                 "Unable to tokenize {:?}{}",
                 s,
@@ -160,18 +161,41 @@ impl Display for LexError {
                     ""
                 }
             ),
-            LexError::Custom(message) => Display::fmt(message, f),
+            LexErrorType::Custom(message) => write!(f, "Unable to parse: {}", message),
         }
     }
 }
 
-impl Error for LexError {}
+impl Error for LexErrorType {}
 
-impl From<io::Error> for LexError {
+impl From<io::Error> for LexErrorType {
     fn from(e: io::Error) -> Self {
-        LexError::IO(e)
+        LexErrorType::IO(e)
     }
 }
+
+impl From<String> for LexErrorType {
+    fn from(e: String) -> Self {
+        LexErrorType::Custom(e)
+    }
+}
+
+/// An error that occurs when lexing
+#[derive(Debug)]
+pub struct LexError {
+    /// The error type
+    pub ty: LexErrorType,
+    /// The location in the input where the error occured
+    pub loc: Loc,
+}
+
+impl Display for LexError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "Error at {}\n{}", self.loc, self.ty)
+    }
+}
+
+impl Error for LexError {}
 
 /// A result type for a complete lexical analysis
 pub type LexResult<T> = Result<T, LexError>;
@@ -430,14 +454,28 @@ impl<'a> Chars<'a> {
             }
         }))
     }
+    /// Turn a [`LexErrorType`] into a [`LexError`] with the current location
+    pub fn error<E>(&self, error: E) -> LexError
+    where
+        E: Into<LexErrorType>,
+    {
+        LexError {
+            ty: error.into(),
+            loc: self.loc(),
+        }
+    }
     /// Create a [`Result::Err`] with an error representing a failure to match any patterns
     pub fn invalid_input<T>(&mut self) -> LexResult<T> {
-        Err(LexError::InvalidInput(
-            self.take_iter()
-                .filter_map(Result::ok)
-                .take(INVALID_INPUT_MAX_LEN)
-                .collect(),
-        ))
+        let loc = self.loc();
+        Err(LexError {
+            ty: LexErrorType::Custom(
+                self.take_iter()
+                    .filter_map(Result::ok)
+                    .take(INVALID_INPUT_MAX_LEN)
+                    .collect(),
+            ),
+            loc,
+        })
     }
     /**
     Attempt to fully tokenize the remaining input
@@ -453,7 +491,7 @@ impl<'a> Chars<'a> {
         S: Pattern,
     {
         let mut tokens = Vec::new();
-        while self.peek()?.is_some() {
+        while self.peek().map_err(|e| self.error(e))?.is_some() {
             let tracker = self.track();
             if let Some(token) = matching.matching(self)? {
                 tokens.push(token);

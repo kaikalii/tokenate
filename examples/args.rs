@@ -7,18 +7,24 @@ use tokenate::*;
 
 /// Try to tokenize a quoted arg
 fn quoted_arg(chars: &mut Chars) -> TokenResult<String> {
-    Ok(if chars.take_if(|c| c == '"')?.is_some() {
-        let mut arg = String::new();
-        while let Some(c) = chars.take()? {
-            match c {
-                '"' => break,
-                c => arg.push(c),
+    Ok(
+        if chars
+            .take_if(|c| c == '"')
+            .map_err(|e| chars.error(e))?
+            .is_some()
+        {
+            let mut arg = String::new();
+            while let Some(c) = chars.take().map_err(|e| chars.error(e))? {
+                match c {
+                    '"' => break,
+                    c => arg.push(c),
+                }
             }
-        }
-        Some(arg)
-    } else {
-        None
-    })
+            Some(arg)
+        } else {
+            None
+        },
+    )
 }
 
 fn main() {
