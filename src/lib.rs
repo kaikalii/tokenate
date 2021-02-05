@@ -342,6 +342,24 @@ pub trait Spanned {
     }
 }
 
+impl<'a, T> Spanned for &'a T
+where
+    T: Spanned,
+{
+    fn span(&self) -> Span {
+        T::span(self)
+    }
+}
+
+impl<'a, T> Spanned for &'a mut T
+where
+    T: Spanned,
+{
+    fn span(&self) -> Span {
+        T::span(self)
+    }
+}
+
 impl Spanned for Span {
     fn span(&self) -> Span {
         *self
