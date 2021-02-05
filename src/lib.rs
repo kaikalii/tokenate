@@ -427,14 +427,15 @@ where
 
 impl<T> MaybeSpanned for [T]
 where
-    T: Spanned,
+    T: MaybeSpanned,
 {
     fn maybe_span(&self) -> Option<Span> {
-        if let Some(first) = self.first() {
+        if let Some(first) = self.first().and_then(MaybeSpanned::maybe_span) {
             Some(
                 self.iter()
                     .skip(1)
-                    .fold(first.span(), |acc, item| acc | item.span()),
+                    .filter_map(MaybeSpanned::maybe_span)
+                    .fold(first, |acc, span| acc | span),
             )
         } else {
             None
