@@ -248,10 +248,6 @@ impl Span {
     pub fn new(start: Loc, end: Loc) -> Self {
         Span { start, end }
     }
-    /// Create a [`Sp`] using this span
-    pub fn sp<T>(self, data: T) -> Sp<T> {
-        Sp::new(data, self)
-    }
 }
 
 impl Display for Span {
@@ -333,6 +329,116 @@ where
 {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{} [{}]", self.data, self.span)
+    }
+}
+
+/// Trait for getting [`Span`]s from things
+pub trait Spanned {
+    /// Get the span
+    fn span(&self) -> Span;
+    /// Create a [`Sp`] using this span
+    fn sp<T>(&self, data: T) -> Sp<T> {
+        Sp::new(data, self.span())
+    }
+}
+
+impl Spanned for Span {
+    fn span(&self) -> Span {
+        *self
+    }
+}
+
+impl<T> Spanned for Sp<T> {
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+
+impl<A, B> Spanned for (A, B)
+where
+    A: Spanned,
+    B: Spanned,
+{
+    fn span(&self) -> Span {
+        self.0.span() | self.1.span()
+    }
+}
+
+impl<A, B, C> Spanned for (A, B, C)
+where
+    A: Spanned,
+    B: Spanned,
+    C: Spanned,
+{
+    fn span(&self) -> Span {
+        self.0.span() | self.1.span() | self.2.span()
+    }
+}
+
+impl<T, E> Spanned for Result<T, E>
+where
+    T: Spanned,
+    E: Spanned,
+{
+    fn span(&self) -> Span {
+        match self {
+            Ok(s) => s.span(),
+            Err(e) => e.span(),
+        }
+    }
+}
+
+/// Trait for getting optional [`Span`]s from things
+pub trait MaybeSpanned {
+    /// Try to get the span
+    fn maybe_span(&self) -> Option<Span>;
+    /// Get the span if it exists, otherwise use the default
+    fn span_or<U>(&self, default: &U) -> Span
+    where
+        U: Spanned,
+    {
+        self.maybe_span().unwrap_or_else(|| default.span())
+    }
+}
+
+impl MaybeSpanned for () {
+    fn maybe_span(&self) -> Option<Span> {
+        None
+    }
+}
+
+impl<T> MaybeSpanned for T
+where
+    T: Spanned,
+{
+    fn maybe_span(&self) -> Option<Span> {
+        Some(self.span())
+    }
+}
+
+impl<T> MaybeSpanned for Option<T>
+where
+    T: MaybeSpanned,
+{
+    fn maybe_span(&self) -> Option<Span> {
+        self.as_ref().and_then(MaybeSpanned::maybe_span)
+    }
+}
+
+impl<T> MaybeSpanned for [T]
+where
+    T: Spanned,
+{
+    fn maybe_span(&self) -> Option<Span> {
+        if let Some(first) = self.first() {
+            Some(
+                self.iter()
+                    .skip(1)
+                    .fold(first.span(), |acc, item| acc | item.span()),
+            )
+        } else {
+            None
+        }
     }
 }
 
@@ -530,7 +636,7 @@ impl RevertHandle {
     }
 }
 
-/// Get the state of a [`bool`] and setting it to `false` in one line
+/// Get the state of a [`bool`] and set it to `false` in one line
 pub trait BoolTake {
     /// Get the state and set to `false`
     fn take(&mut self) -> bool;
