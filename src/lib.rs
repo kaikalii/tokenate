@@ -140,7 +140,7 @@ const INVALID_INPUT_MAX_LEN: usize = 30;
 #[derive(Debug)]
 pub enum LexErrorType {
     /// An IO error
-    IO(io::Error),
+    Io(io::Error),
     /// No patterns matched the remaining input
     InvalidInput(String),
     /// A custom message
@@ -150,7 +150,7 @@ pub enum LexErrorType {
 impl Display for LexErrorType {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            LexErrorType::IO(e) => Display::fmt(e, f),
+            LexErrorType::Io(e) => Display::fmt(e, f),
             LexErrorType::InvalidInput(s) => write!(
                 f,
                 "Unable to tokenize {:?}{}",
@@ -170,13 +170,25 @@ impl Error for LexErrorType {}
 
 impl From<io::Error> for LexErrorType {
     fn from(e: io::Error) -> Self {
-        LexErrorType::IO(e)
+        LexErrorType::Io(e)
     }
 }
 
 impl From<String> for LexErrorType {
     fn from(e: String) -> Self {
         LexErrorType::Custom(e)
+    }
+}
+
+impl<'a> From<&String> for LexErrorType {
+    fn from(e: &String) -> Self {
+        LexErrorType::Custom(e.clone())
+    }
+}
+
+impl<'a> From<&str> for LexErrorType {
+    fn from(e: &str) -> Self {
+        LexErrorType::Custom(e.into())
     }
 }
 
