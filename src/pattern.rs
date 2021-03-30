@@ -242,7 +242,7 @@ impl<'a> Pattern for &'a str {
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let start_loc = chars.loc;
         for c in self.chars() {
-            if chars.take_if(c).map_err(|e| chars.error(e))?.is_none() {
+            if chars.take_if(c)?.is_none() {
                 return Ok(None);
             }
         }
@@ -507,10 +507,7 @@ where
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         let mut token = String::new();
         let start_loc = chars.loc;
-        while let Some(c) = chars
-            .take_if(|c| self.pattern.matches(c))
-            .map_err(|e| chars.error(e))?
-        {
+        while let Some(c) = chars.take_if(|c| self.pattern.matches(c))? {
             token.push(c);
             match self.range.end_bound() {
                 Bound::Excluded(n) if token.len() + 1 == *n => break,

@@ -476,7 +476,7 @@ where
 /// Parses characters from a reader
 pub struct Chars<'a> {
     chars: CodePoints<Bytes<Box<dyn Read + 'a>>>,
-    history: SmallVec<[char; 32]>,
+    history: SmallVec<[(char, Loc); 32]>,
     cursor: usize,
     revert_trackers: usize,
     loc: Loc,
@@ -537,8 +537,8 @@ impl<'a> Chars<'a> {
         }
     }
     /// Peek at the next character without consuming it
-    pub fn peek(&mut self) -> io::Result<Option<char>> {
-        Ok(if let Some(c) = self.history.get(self.cursor) {
+    pub fn peek(&mut self) -> LexResult<Option<char>> {
+        Ok(if let Some((c, _)) = self.history.get(self.cursor) {
             Some(*c)
         } else {
             let loc = self.loc;
@@ -550,11 +550,14 @@ impl<'a> Chars<'a> {
         })
     }
     /// Take a character
-    pub fn take(&mut self) -> io::Result<Option<char>> {
+    pub fn take(&mut self) -> LexResult<Option<char>> {
         let c = if self.cursor < self.history.len() {
-            Some(self.history[self.cursor])
-        } else if let Some(c) = self.chars.next().transpose()? {
-            self.history.push(c);
+            Some(self.history[self.cursor].0)
+        } else if let Some(c) = self.chars.next().transpose().map_err(|io_error| LexError {
+            ty: io_error.into(),
+            loc: self.loc,
+        })? {
+            self.history.push((c, self.loc));
             Some(c)
         } else {
             None
@@ -578,7 +581,7 @@ impl<'a> Chars<'a> {
         TakeIter { chars: self }
     }
     /// Take a character if it satisfies the [`CharPattern`]
-    pub fn take_if<P>(&mut self, pattern: P) -> io::Result<Option<char>>
+    pub fn take_if<P>(&mut self, pattern: P) -> LexResult<Option<char>>
     where
         P: CharPattern,
     {
@@ -628,7 +631,7 @@ impl<'a> Chars<'a> {
         S: Pattern,
     {
         let mut tokens = Vec::new();
-        while self.peek().map_err(|e| self.error(e))?.is_some() {
+        while self.peek()?.is_some() {
             let tracker = self.track();
             if let Some(token) = matching.matching(self)? {
                 tokens.push(token);
@@ -647,7 +650,7 @@ pub struct TakeIter<'a, 'b> {
 }
 
 impl Iterator for TakeIter<'_, '_> {
-    type Item = io::Result<char>;
+    type Item = LexResult<char>;
     fn next(&mut self) -> Option<Self::Item> {
         self.chars.take().transpose()
     }
