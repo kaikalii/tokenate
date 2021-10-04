@@ -10,6 +10,11 @@ use std::{
 
 use crate::*;
 
+/// [`CharPattern`] that never matches
+pub fn no_skip(_: char) -> bool {
+    false
+}
+
 /// Check if a `char` is not whitespace
 pub fn not_whitespace(c: char) -> bool {
     !c.is_whitespace()
@@ -72,11 +77,13 @@ pub trait Pattern {
     type Token;
     /// Try to match the pattern and consume a token from [`Chars`]
     ///
-    /// This method should be implemented but not directly called
+    /// **This method should be implemented but not directly called.**
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>>;
     /// Try to match the pattern and consume a token from [`Chars`]
     ///
-    /// This method should be called but not implemented
+    /// **This method should be called but not implemented.**
+    /// It wraps the [`Pattern::try_match`] implementation in logic that
+    /// tracks character spans.
     #[allow(clippy::let_and_return)]
     fn matching(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
         #[cfg(feature = "debug")]
@@ -162,7 +169,7 @@ pub trait Pattern {
     {
         Map { pattern: self, f }
     }
-    /// Create a pattern that attempt to parse to a token of a type that implements [`FromStr`]
+    /// Create a pattern that attempts to parse to a token of a type that implements [`FromStr`]
     fn parse<T>(self) -> Parse<Self, T>
     where
         Self: Sized,
@@ -174,13 +181,26 @@ pub trait Pattern {
         }
     }
     /// Create a pattern that first tries to match this one.
-    /// Upon success, a the given value is returned instead.
+    /// Upon success, the given value is returned instead.
     fn is<T>(self, val: T) -> Is<Self, T>
     where
         Self: Sized,
         T: Clone,
     {
         Is { pattern: self, val }
+    }
+    /// Create a pattern that first tries to match this one.
+    /// Upon success, the value returned from the given function
+    /// is returned instead.
+    fn calls<F, T>(self, builder: F) -> Calls<Self, F>
+    where
+        Self: Sized,
+        F: Fn() -> T,
+    {
+        Calls {
+            pattern: self,
+            builder,
+        }
     }
     /// Create a pattern that first tries to match this one.
     /// Upon success, attempts to match the given second pattern and combine the
@@ -197,22 +217,53 @@ pub trait Pattern {
             f,
         }
     }
-    /// Change the token type to `()`
-    fn skip(self) -> Skip<Self>
+    /// Create a pattern that first tries to match this one.
+    /// Upon failure, returns the given token
+    fn or_token(self, default: Self::Token) -> OrToken<Self>
     where
         Self: Sized,
+        Self::Token: Clone,
     {
-        self.is(())
+        OrToken {
+            pattern: self,
+            token: default,
+        }
     }
-    /// Combine this pattern with another and change their token types to `()`
-    fn or_skip<B>(self, other: B) -> Patterns<Skip<Self>, Skip<B>>
+    /// Create a pattern that first tries to match this one.
+    /// Upon failure, returns the result of the given function
+    fn or_else_token<F>(self, default: F) -> OrElseToken<Self, F>
     where
         Self: Sized,
-        B: Pattern,
+        F: Fn() -> Self::Token,
     {
-        Patterns {
-            first: self.skip(),
-            second: other.skip(),
+        OrElseToken {
+            pattern: self,
+            f: default,
+        }
+    }
+    /// Create a pattern that first tries to match this one.
+    /// Upon failure, returns the default token
+    fn or_default(self) -> OrDefault<Self>
+    where
+        Self: Sized,
+        Self::Token: Default,
+    {
+        OrDefault { pattern: self }
+    }
+    /// Create a pattern that first tries to match this one.
+    /// Upon success, attempts to match the given second pattern and
+    /// concatenate the resulting strings
+    fn concat<B>(self, other: B) -> Concat<Self, B>
+    where
+        Self: Sized,
+        Self::Token: AsRef<str>,
+        B: Pattern,
+        B::Token: AsRef<str>,
+    {
+        Join {
+            a: self,
+            b: other,
+            f: |a, b| a.as_ref().to_owned() + b.as_ref(),
         }
     }
 }
@@ -307,6 +358,7 @@ pub trait CharPattern {
         ptr_name(self)
     }
     /// Promote this to a wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    /// and matches at least one matching character
     fn any(self) -> TakeAtLeast<Self>
     where
         Self: Sized,
@@ -317,9 +369,8 @@ pub trait CharPattern {
     Promote this to a wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
     and matches if the length of matched strings lies within the given range
 
-    Unlike [`CharPattern::any`] or [`pattern::chars`] (which are equivalent), passing
-    this function can match empty strings by passing a range that contains `0`. For a use
-    case of this, see the example in the [`crate`] root.
+    Unlike [`CharPattern::any`] or [`pattern::chars`] (which are equivalent),
+    this function can match empty strings by passing a range that contains `0`.
     */
     fn take<N>(self, range: N) -> Take<Self, N>
     where
@@ -377,6 +428,7 @@ pub type TakeAtLeast<P> = Take<P, RangeFrom<usize>>;
 pub type TakeExact<P> = Take<P, RangeInclusive<usize>>;
 
 /// The pattern produced by [`Pattern::map`]
+#[derive(Clone, Copy)]
 pub struct Map<P, F> {
     pattern: P,
     f: F,
@@ -400,6 +452,7 @@ where
 }
 
 /// The pattern produced by [`Pattern::parse`]
+#[derive(Clone, Copy)]
 pub struct Parse<P, T>
 where
     P: Pattern,
@@ -431,6 +484,7 @@ where
 }
 
 /// The pattern produced by [`Pattern::is`]
+#[derive(Clone, Copy)]
 pub struct Is<P, T> {
     pattern: P,
     val: T,
@@ -453,10 +507,35 @@ where
     }
 }
 
-/// The pattern produced by [`Pattern::skip`]
-pub type Skip<P> = Is<P, ()>;
+/// The pattern produces by [`Pattern::calls`]
+#[derive(Clone, Copy)]
+pub struct Calls<P, F> {
+    pattern: P,
+    builder: F,
+}
+
+impl<P, F, T> Pattern for Calls<P, F>
+where
+    P: Pattern,
+    F: Fn() -> T,
+{
+    type Token = T;
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Ok(self
+            .pattern
+            .matching(chars)?
+            .map(|token| token.span.sp((self.builder)())))
+    }
+    fn name(&self) -> String {
+        format!("is_built({})", self.pattern.name())
+    }
+}
+
+/// The pattern produced by [`Pattern::concat`]
+pub type Concat<A, B> = Join<A, B, fn(<A as Pattern>::Token, <B as Pattern>::Token) -> String>;
 
 /// The pattern produced by [`Pattern::join`]
+#[derive(Clone, Copy)]
 pub struct Join<A, B, F>
 where
     A: Pattern,
@@ -493,6 +572,7 @@ where
 }
 
 /// The pattern produced by [`CharPattern::take`]
+#[derive(Clone, Copy)]
 pub struct Take<P, N> {
     pattern: P,
     range: N,
@@ -530,4 +610,83 @@ where
     fn name(&self) -> String {
         format!("take({})", self.pattern.name())
     }
+}
+
+/// The pattern produced by [`Pattern::or_default`]
+#[derive(Clone, Copy)]
+pub struct OrDefault<P> {
+    pattern: P,
+}
+
+impl<P> Pattern for OrDefault<P>
+where
+    P: Pattern,
+    P::Token: Default,
+{
+    type Token = P::Token;
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Ok(Some(self.pattern.try_match(chars)?.unwrap_or_else(|| {
+            Span::new(chars.loc(), chars.loc()).sp(Default::default())
+        })))
+    }
+    fn name(&self) -> String {
+        format!("or_default({})", self.pattern.name())
+    }
+}
+
+/// The pattern produced by [`Pattern::or_token`]
+#[derive(Clone, Copy)]
+pub struct OrToken<P>
+where
+    P: Pattern,
+{
+    pattern: P,
+    token: P::Token,
+}
+
+impl<P> Pattern for OrToken<P>
+where
+    P: Pattern,
+    P::Token: Clone,
+{
+    type Token = P::Token;
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Ok(Some(self.pattern.try_match(chars)?.unwrap_or_else(|| {
+            Span::new(chars.loc(), chars.loc()).sp(self.token.clone())
+        })))
+    }
+    fn name(&self) -> String {
+        format!("or_token({})", self.pattern.name())
+    }
+}
+
+/// The pattern produced by [`Pattern::or_else_token`]
+#[derive(Clone, Copy)]
+pub struct OrElseToken<P, F> {
+    pattern: P,
+    f: F,
+}
+
+impl<P, F> Pattern for OrElseToken<P, F>
+where
+    P: Pattern,
+    F: Fn() -> P::Token,
+{
+    type Token = P::Token;
+    fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
+        Ok(Some(self.pattern.try_match(chars)?.unwrap_or_else(|| {
+            Span::new(chars.loc(), chars.loc()).sp((self.f)())
+        })))
+    }
+    fn name(&self) -> String {
+        format!("or_else_token({})", self.pattern.name())
+    }
+}
+
+#[test]
+fn concat_test() {
+    let pattern = "abc".take_exact(1).concat("def".take_exact(1));
+    Chars::new("ad".as_bytes())
+        .tokenize(&pattern, &char::is_whitespace.any())
+        .unwrap_or_else(|e| panic!("{}", e));
 }

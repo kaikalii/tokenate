@@ -37,10 +37,10 @@ Here is a simple example example of a pattern than matches a string literal:
 use tokenate::*;
 
 fn string_literal(chars: &mut Chars) -> TokenResult<String> {
-    Ok(if chars.take_if(|c| c == '"').map_err(|e| chars.error(e))?.is_some() {
+    Ok(if chars.take_if(|c| c == '"')?.is_some() {
         let mut arg = String::new();
         let mut escaped = false;
-        while let Some(c) = chars.take().map_err(|e| chars.error(e))? {
+        while let Some(c) = chars.take()? {
             match c {
                 '\\' if escaped.take() => arg.push('\\'),
                 '\\' => escaped = true,
@@ -61,7 +61,15 @@ fn string_literal(chars: &mut Chars) -> TokenResult<String> {
     })
 }
 
-Chars::new("\" Hi there!\"".as_bytes()).tokenize(&string_literal, &()).unwrap();
+assert_eq!(
+    "Hi \nthere!",
+    Chars::new(r#""Hi \nthere!""#.as_bytes())
+        .tokens(&string_literal, &char::is_whitespace.any())
+        .next()
+        .unwrap()
+        .unwrap()
+        .data
+)
 ```
 
 # Simple Lexer Example
@@ -118,6 +126,10 @@ let expected = vec![
 
 assert_eq!(tokens, expected);
 ```
+
+# More Examples
+
+More examples can be found [on GitHub](https://github.com/kaikalii/tokenate/tree/main/examples).
 */
 
 pub mod pattern;
@@ -138,7 +150,7 @@ const INVALID_INPUT_MAX_LEN: usize = 30;
 
 /// An error type for [`LexError`]
 #[derive(Debug)]
-pub enum LexErrorType {
+pub enum LexErrorKind {
     /// An IO error
     Io(io::Error),
     /// No patterns matched the remaining input
@@ -147,11 +159,11 @@ pub enum LexErrorType {
     Custom(String),
 }
 
-impl Display for LexErrorType {
+impl Display for LexErrorKind {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            LexErrorType::Io(e) => Display::fmt(e, f),
-            LexErrorType::InvalidInput(s) => write!(
+            LexErrorKind::Io(e) => Display::fmt(e, f),
+            LexErrorKind::InvalidInput(s) => write!(
                 f,
                 "Unable to tokenize {:?}{}",
                 s,
@@ -161,49 +173,49 @@ impl Display for LexErrorType {
                     ""
                 }
             ),
-            LexErrorType::Custom(message) => write!(f, "Unable to parse: {}", message),
+            LexErrorKind::Custom(message) => write!(f, "Unable to parse: `{}`", message),
         }
     }
 }
 
-impl Error for LexErrorType {}
+impl Error for LexErrorKind {}
 
-impl From<io::Error> for LexErrorType {
+impl From<io::Error> for LexErrorKind {
     fn from(e: io::Error) -> Self {
-        LexErrorType::Io(e)
+        LexErrorKind::Io(e)
     }
 }
 
-impl From<String> for LexErrorType {
+impl From<String> for LexErrorKind {
     fn from(e: String) -> Self {
-        LexErrorType::Custom(e)
+        LexErrorKind::Custom(e)
     }
 }
 
-impl<'a> From<&String> for LexErrorType {
+impl<'a> From<&String> for LexErrorKind {
     fn from(e: &String) -> Self {
-        LexErrorType::Custom(e.clone())
+        LexErrorKind::Custom(e.clone())
     }
 }
 
-impl<'a> From<&str> for LexErrorType {
+impl<'a> From<&str> for LexErrorKind {
     fn from(e: &str) -> Self {
-        LexErrorType::Custom(e.into())
+        LexErrorKind::Custom(e.into())
     }
 }
 
 /// An error that occurs when lexing
 #[derive(Debug)]
 pub struct LexError {
-    /// The error type
-    pub ty: LexErrorType,
+    /// The error kind
+    pub kind: LexErrorKind,
     /// The location in the input where the error occured
     pub loc: Loc,
 }
 
 impl Display for LexError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "Error at {}\n{}", self.loc, self.ty)
+        write!(f, "Error at {}\n{}", self.loc, self.kind)
     }
 }
 
@@ -260,6 +272,10 @@ impl Span {
     pub fn new(start: Loc, end: Loc) -> Self {
         Span { start, end }
     }
+    /// Create a [`Sp`] using this span
+    fn sp<T>(&self, data: T) -> Sp<T> {
+        Sp::new(data, self.span())
+    }
 }
 
 impl Display for Span {
@@ -270,6 +286,7 @@ impl Display for Span {
 
 impl BitOr for Span {
     type Output = Self;
+    /// Get the smallest span that contains 2 spans
     fn bitor(self, other: Self) -> Self::Output {
         Span::new(self.start.min(other.start), self.end.max(other.end))
     }
@@ -348,10 +365,6 @@ where
 pub trait Spanned {
     /// Get the span
     fn span(&self) -> Span;
-    /// Create a [`Sp`] using this span
-    fn sp<T>(&self, data: T) -> Sp<T> {
-        Sp::new(data, self.span())
-    }
 }
 
 impl<'a, T> Spanned for &'a T
@@ -402,6 +415,18 @@ where
 {
     fn span(&self) -> Span {
         self.0.span() | self.1.span() | self.2.span()
+    }
+}
+
+impl<A, B, C, D> Spanned for (A, B, C, D)
+where
+    A: Spanned,
+    B: Spanned,
+    C: Spanned,
+    D: Spanned,
+{
+    fn span(&self) -> Span {
+        self.0.span() | self.1.span() | self.2.span() | self.3.span()
     }
 }
 
@@ -513,7 +538,8 @@ impl<'a> Chars<'a> {
     }
     /// Get a reversion handle to the current input position
     ///
-    /// [`Chars::tokenize`] handles this automatically, so you shouldn't normally need to call this function
+    /// [`Chars::tokenize`], [`Chars::tokens`], and [`Chars::into_tokens] handle
+    /// this automatically, so you shouldn't normally need to call this function.
     pub fn track(&mut self) -> RevertHandle {
         self.revert_trackers += 1;
         RevertHandle {
@@ -524,7 +550,11 @@ impl<'a> Chars<'a> {
     /// Revert to the position defined by a reversion handle
     ///
     /// This is used to revert to a previous input position when a pattern fails to match.
-    /// [`Chars::tokenize`] handles this automatically, so you shouldn't normally need to call this function
+    /// [`Chars::tokenize`], [`Chars::tokens`], and [`Chars::into_tokens] handle
+    /// this automatically, so you shouldn't normally need to call this function.
+    ///
+    /// It is genreally a logic error to pass this function a handle which was created
+    /// from a different [`Chars`].
     pub fn revert(&mut self, handle: RevertHandle) {
         self.loc = handle.loc;
         self.cursor = handle.cursor;
@@ -552,7 +582,7 @@ impl<'a> Chars<'a> {
         let c = if self.cursor < self.history.len() {
             Some(self.history[self.cursor].0)
         } else if let Some(c) = self.chars.next().transpose().map_err(|io_error| LexError {
-            ty: io_error.into(),
+            kind: io_error.into(),
             loc: self.loc,
         })? {
             self.history.push((c, self.loc));
@@ -574,7 +604,7 @@ impl<'a> Chars<'a> {
             None
         })
     }
-    /// Get an iterator over the characters
+    /// Get a consuming iterator over the characters
     pub fn take_iter<'b>(&'b mut self) -> TakeIter<'a, 'b> {
         TakeIter { chars: self }
     }
@@ -592,28 +622,52 @@ impl<'a> Chars<'a> {
             }
         }))
     }
-    /// Turn a [`LexErrorType`] into a [`LexError`] with the current location
+    /// Turn a [`LexErrorKind`] into a [`LexError`] with the current location
     pub fn error<E>(&self, error: E) -> LexError
     where
-        E: Into<LexErrorType>,
+        E: Into<LexErrorKind>,
     {
         LexError {
-            ty: error.into(),
+            kind: error.into(),
             loc: self.loc(),
         }
     }
-    /// Create a [`Result::Err`] with an error representing a failure to match any patterns
-    pub fn invalid_input<T>(&mut self) -> LexResult<T> {
+    /// Create a [`LexError`] with an error representing a failure to match any patterns
+    pub fn invalid_input(&mut self) -> LexError {
         let loc = self.loc();
-        Err(LexError {
-            ty: LexErrorType::Custom(
+        LexError {
+            kind: LexErrorKind::Custom(
                 self.take_iter()
                     .filter_map(Result::ok)
                     .take(INVALID_INPUT_MAX_LEN)
                     .collect(),
             ),
             loc,
-        })
+        }
+    }
+    /// Get an iterator over tokens matching `matching` and skipping `skip`
+    pub fn tokens<'b, M, S>(&'b mut self, matching: &'b M, skip: &'b S) -> Tokens<'a, 'b, M, S>
+    where
+        M: Pattern,
+        S: Pattern,
+    {
+        Tokens {
+            chars: self,
+            matching,
+            skip,
+        }
+    }
+    /// Consume self into an iterator over tokens matching `matching` and skipping `skip`
+    pub fn into_tokens<M, S>(self, matching: M, skip: S) -> IntoTokens<'a, M, S>
+    where
+        M: Pattern,
+        S: Pattern,
+    {
+        IntoTokens {
+            chars: self,
+            matching,
+            skip,
+        }
     }
     /**
     Attempt to fully tokenize the remaining input
@@ -623,22 +677,67 @@ impl<'a> Chars<'a> {
     Tokens matching the `skip` pattern will consume input but not generate tokens.
     This is useful for things like whitespace.
     */
-    pub fn tokenize<M, S, T>(&mut self, matching: &M, skip: &S) -> LexResult<Vec<Sp<T>>>
+    pub fn tokenize<M, S>(&mut self, matching: &M, skip: &S) -> LexResult<Vec<Sp<M::Token>>>
     where
-        M: Pattern<Token = T>,
+        M: Pattern,
         S: Pattern,
     {
-        let mut tokens = Vec::new();
-        while self.peek()?.is_some() {
-            let tracker = self.track();
-            if let Some(token) = matching.matching(self)? {
-                tokens.push(token);
-            } else if skip.matching(self)?.is_none() {
-                self.revert(tracker);
-                return self.invalid_input();
+        self.tokens(matching, skip).collect()
+    }
+}
+
+/// The iterator returned from [`Chars::tokens`]
+pub struct Tokens<'a, 'b, M, S> {
+    chars: &'b mut Chars<'a>,
+    matching: &'b M,
+    skip: &'b S,
+}
+
+impl<M, S> Iterator for Tokens<'_, '_, M, S>
+where
+    M: Pattern,
+    S: Pattern,
+{
+    type Item = LexResult<Sp<M::Token>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.chars.peek() {
+                Ok(Some(_)) => {}
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            }
+            let tracker = self.chars.track();
+            match self.matching.matching(self.chars) {
+                Ok(Some(token)) => return Some(Ok(token)),
+                Ok(None) => match self.skip.matching(self.chars) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        self.chars.revert(tracker);
+                        return Some(Err(self.chars.invalid_input()));
+                    }
+                    Err(e) => return Some(Err(e)),
+                },
+                Err(e) => return Some(Err(e)),
             }
         }
-        Ok(tokens)
+    }
+}
+
+/// The iterator returned from [`Chars::into_tokens`]
+pub struct IntoTokens<'a, M, S> {
+    chars: Chars<'a>,
+    matching: M,
+    skip: S,
+}
+
+impl<M, S> Iterator for IntoTokens<'_, M, S>
+where
+    M: Pattern,
+    S: Pattern,
+{
+    type Item = LexResult<Sp<M::Token>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.chars.tokens(&self.matching, &self.skip).next()
     }
 }
 

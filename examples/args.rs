@@ -26,7 +26,7 @@ fn main() {
     // `quoted_arg` will match arguments surrounded in quotes
     // `pattern::not_whitespace` will match arguments without quotes
     // The `or` combinator is a method of the `Pattern` trait, and it creates a new pattern
-    // which will try to match the two patterns in order
+    // which will try to match either of the two patterns in order
     let patterns = quoted_arg.or_chars(pattern::not_whitespace);
     // A list of test inputs
     let inputs = [
@@ -34,13 +34,11 @@ fn main() {
         r#"arg1 "arg2a arg2b" arg3"#,
         r#"cd "C:\Program Files""#,
     ];
-    for &input in &inputs {
+    for input in inputs {
         println!("input: {}", input);
-        let mut chars = Chars::new(input.as_bytes());
         println!("args: ");
 
-        for arg in chars
-            // Match the patterns and skip whitespace
+        for arg in Chars::new(input.as_bytes())
             .tokenize(&patterns, &char::is_whitespace.any())
             .unwrap()
         {
