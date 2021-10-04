@@ -138,7 +138,7 @@ use std::{
     error::Error,
     fmt::{self, Debug, Display, Formatter},
     io::{self, Bytes, Read},
-    ops::BitOr,
+    ops::{BitOr, BitOrAssign},
 };
 
 use smallvec::SmallVec;
@@ -287,8 +287,16 @@ impl Display for Span {
 impl BitOr for Span {
     type Output = Self;
     /// Get the smallest span that contains 2 spans
-    fn bitor(self, other: Self) -> Self::Output {
-        Span::new(self.start.min(other.start), self.end.max(other.end))
+    fn bitor(mut self, other: Self) -> Self::Output {
+        self |= other;
+        self
+    }
+}
+
+impl BitOrAssign for Span {
+    fn bitor_assign(&mut self, other: Self) {
+        self.start = self.start.min(other.start);
+        self.end = self.end.max(other.end);
     }
 }
 
