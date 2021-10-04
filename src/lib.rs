@@ -460,16 +460,14 @@ where
     T: MaybeSpanned,
 {
     fn maybe_span(&self) -> Option<Span> {
-        if let Some(first) = self.first().and_then(MaybeSpanned::maybe_span) {
-            Some(
+        self.first()
+            .and_then(MaybeSpanned::maybe_span)
+            .map(|first| {
                 self.iter()
                     .skip(1)
                     .filter_map(MaybeSpanned::maybe_span)
-                    .fold(first, |acc, span| acc | span),
-            )
-        } else {
-            None
-        }
+                    .fold(first, |acc, span| acc | span)
+            })
     }
 }
 

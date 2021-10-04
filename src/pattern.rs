@@ -291,10 +291,10 @@ where
 impl<T> Pattern for Box<dyn Pattern<Token = T>> {
     type Token = T;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
-        Box::as_ref(&self).matching(chars)
+        Box::as_ref(self).matching(chars)
     }
     fn name(&self) -> String {
-        format!("box({})", Box::as_ref(&self).name())
+        format!("box({})", Box::as_ref(self).name())
     }
 }
 
@@ -306,7 +306,7 @@ pub trait CharPattern {
     fn name(&self) -> String {
         ptr_name(self)
     }
-    /// Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    /// Promote this to a wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
     fn any(self) -> TakeAtLeast<Self>
     where
         Self: Sized,
@@ -314,7 +314,7 @@ pub trait CharPattern {
         self.take(1..)
     }
     /**
-    Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    Promote this to a wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
     and matches if the length of matched strings lies within the given range
 
     Unlike [`CharPattern::any`] or [`pattern::chars`] (which are equivalent), passing
@@ -331,7 +331,7 @@ pub trait CharPattern {
             range,
         }
     }
-    /// Promote this to wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
+    /// Promote this to a wrapper than implements [`Pattern`] with [`Pattern::Token`] = [`String`]
     /// and matches if the length of matched strings lies within the given range
     fn take_exact(self, n: usize) -> TakeExact<Self>
     where
