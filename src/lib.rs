@@ -273,7 +273,7 @@ impl Span {
         Span { start, end }
     }
     /// Create a [`Sp`] using this span
-    fn sp<T>(&self, data: T) -> Sp<T> {
+    pub fn sp<T>(&self, data: T) -> Sp<T> {
         Sp::new(data, self.span())
     }
 }

@@ -342,10 +342,10 @@ where
 impl<T> Pattern for Box<dyn Pattern<Token = T>> {
     type Token = T;
     fn try_match(&self, chars: &mut Chars) -> TokenResult<Sp<Self::Token>> {
-        Box::as_ref(self).matching(chars)
+        Box::as_ref(self).try_match(chars)
     }
     fn name(&self) -> String {
-        format!("box({})", Box::as_ref(self).name())
+        Box::as_ref(self).name()
     }
 }
 
